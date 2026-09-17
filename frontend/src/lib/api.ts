@@ -1,12 +1,30 @@
+import type {
+  DeviceOut,
+  DeviceStatusDTO,
+  HistorySampleOut,
+} from '@/types/device'
+
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 
-export type DeviceStatus = 'healthy' | 'degraded' | 'down' | 'unknown'
+async function requestJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`)
+  if (!response.ok) {
+    throw new Error(
+      `GET ${path} failed: ${response.status} ${response.statusText}`,
+    )
+  }
+  return (await response.json()) as T
+}
 
-export interface DeviceStatusDTO {
-  status: DeviceStatus
-  latency_ms: number | null
-  timestamp: string
+export async function fetchDevices(): Promise<DeviceOut[]> {
+  return requestJson<DeviceOut[]>('/api/devices')
+}
+
+export async function fetchDeviceHistory(
+  deviceId: string,
+): Promise<HistorySampleOut[]> {
+  return requestJson<HistorySampleOut[]>(`/api/history/${deviceId}`)
 }
 
 export function subscribeToStatusStream(
