@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Databases
+*.db
+*.sqlite3
+
+# Environment files
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+
+# Logs
+*.log
