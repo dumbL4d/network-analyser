@@ -5,3 +5,4 @@ pydantic-settings==2.5.*
 python-dotenv==1.0.*
 sqlmodel==0.0.22
 icmplib==3.0.*
+sse-starlette==2.1.*
