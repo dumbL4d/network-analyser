@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.seed import seed_devices_from_json
 from app.db.session import init_db
+
+logging.basicConfig(level=logging.INFO)
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "infra" / "devices.seed.json"
 
