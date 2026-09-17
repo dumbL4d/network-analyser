@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.db.seed import seed_devices_from_json
 from app.db.session import init_db
 from app.routers.devices import router as devices_router
+from app.routers.history import router as history_router
 from app.services.ping_engine import DeviceStatus
 from app.services.poll_loop import run_poll_loop
 from app.services.status_store import status_store
@@ -63,6 +64,7 @@ app.add_middleware(
 )
 
 app.include_router(devices_router)
+app.include_router(history_router)
 
 
 @app.get("/api/health", status_code=200)

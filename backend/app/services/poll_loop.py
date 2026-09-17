@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from app.core.config import settings
 from app.db.session import engine
 from app.models.device import Device
+from app.services.history_store import history_store
 from app.services.ping_engine import ping_all
 from app.services.status_store import status_store
 
@@ -35,6 +36,7 @@ async def run_poll_loop() -> None:
                 privileged=settings.PING_PRIVILEGED,
             )
             status_store.update(results)
+            history_store.record(results)
             logger.info("Status poll complete for %d devices", len(results))
         except Exception:
             logger.error("Status poll iteration failed; continuing", exc_info=True)

@@ -18,5 +18,8 @@ class Settings(BaseSettings):
     LATENCY_WARN_MS: float = 100.0
     LATENCY_CRIT_MS: float = 500.0
 
+    # Rolling history
+    HISTORY_MAX_SAMPLES: int = 36
+
 
 settings = Settings()
