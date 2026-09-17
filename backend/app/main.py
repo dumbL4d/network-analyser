@@ -1,9 +1,24 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.db.seed import seed_devices_from_json
+from app.db.session import init_db
 
-app = FastAPI(title=settings.APP_NAME)
+SEED_PATH = Path(__file__).resolve().parents[2] / "infra" / "devices.seed.json"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    seed_devices_from_json(str(SEED_PATH))
+    yield
+
+
+app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

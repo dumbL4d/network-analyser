@@ -3,3 +3,4 @@ uvicorn[standard]==0.32.*
 pydantic==2.9.*
 pydantic-settings==2.5.*
 python-dotenv==1.0.*
+sqlmodel==0.0.22
