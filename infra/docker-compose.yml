@@ -1,0 +1,121 @@
+# This simulates a small warehouse network topology for local development in the
+# absence of real hardware. The 11 `sim-*` containers are ICMP-pingable Alpine
+# stubs arranged in a tree (see infra/devices.seed.json for topology). The real
+# backend service will ping these by their static IPs on the warehouse-net bridge
+# network.
+
+networks:
+  warehouse-net:
+    driver: bridge
+    ipam:
+      config:
+        # Gateway moved off .1 so the firewall device can own 10.99.0.1.
+        - subnet: "10.99.0.0/24"
+          gateway: "10.99.0.254"
+
+services:
+  sim-fw-01:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.1
+
+  sim-sw-edge:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.2
+
+  sim-sw-server:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.3
+
+  sim-sw-ot:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.4
+
+  sim-srv-prod-1:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.10
+
+  sim-srv-prod-2:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.11
+
+  sim-plc-conveyor-1:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.20
+
+  sim-hmi-panel-1:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.21
+
+  sim-ap-aisle-1:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.30
+
+  sim-ap-aisle-2:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.31
+
+  sim-scanner-1:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.40
+
+  # TODO: uncomment once backend/Dockerfile exists
+  # backend:
+  #   build:
+  #     context: ../backend
+  #   # Dockerfile added in a later ticket
+  #   depends_on:
+  #     - sim-fw-01
+  #   networks:
+  #     - warehouse-net
+
+  # TODO: uncomment once frontend/Dockerfile exists
+  # frontend:
+  #   build:
+  #     context: ../frontend
+  #   # Dockerfile added in a later ticket
+  #   networks:
+  #     - warehouse-net
