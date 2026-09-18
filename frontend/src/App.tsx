@@ -5,6 +5,7 @@ import AdminPanel from '@/components/admin/AdminPanel'
 import AdminRoute from '@/components/AdminRoute'
 import DeviceDetailView from '@/components/DeviceDetailView'
 import LoginPage from '@/components/LoginPage'
+import MetricsView from '@/components/MetricsView'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import TopologyView from '@/components/TopologyView'
 import { Button } from '@/components/ui/button'
@@ -23,14 +24,22 @@ function AppHeader() {
     <header className="flex h-14 items-center justify-between border-b px-6">
       <div className="flex items-center gap-6">
         <h1 className="text-lg font-semibold tracking-tight">Network Analyser</h1>
-        {isAuthenticated && role === 'admin' && (
+        {isAuthenticated && (
           <nav className="flex items-center gap-1">
             <Link
-              to="/admin"
+              to="/metrics"
               className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
-              Admin
+              Metrics
             </Link>
+            {role === 'admin' && (
+              <Link
+                to="/admin"
+                className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Admin
+              </Link>
+            )}
           </nav>
         )}
       </div>
@@ -102,6 +111,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <AccountPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/metrics"
+          element={
+            <ProtectedRoute>
+              <MetricsView />
             </ProtectedRoute>
           }
         />
