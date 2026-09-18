@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models.device import Device
 from app.models.settings import AppSettings
+from app.services.flap_store import flap_store
 from app.services.history_store import history_store
 from app.services.ping_engine import ping_all
 from app.services.status_store import status_store
@@ -66,6 +67,7 @@ async def run_poll_loop() -> None:
             )
             status_store.update(results)
             history_store.record(results)
+            flap_store.record(results)
             logger.info(
                 "Status poll complete for %d devices (interval=%ss)",
                 len(results),
