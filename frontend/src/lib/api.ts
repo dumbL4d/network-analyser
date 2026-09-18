@@ -6,6 +6,7 @@ import type {
   FlapCountOut,
   HistorySampleOut,
 } from '@/types/device'
+import type { IncidentOut, PlaybookOut } from '@/types/incident'
 import type { AppSettingsOut, SettingsUpdate } from '@/types/settings'
 import type {
   PasswordChangeRequest,
@@ -137,6 +138,23 @@ export function fetchDeviceHistory(
 
 export function fetchFlapCounts(): Promise<FlapCountOut[]> {
   return request<FlapCountOut[]>('/api/flaps', { authenticated: true })
+}
+
+// --- Incidents / playbooks (Ticket 5.2/5.3) ---------------------------------
+
+/** Live root-cause/collateral incident list; re-evaluated by the backend per call. */
+export function fetchIncidents(): Promise<IncidentOut[]> {
+  return request<IncidentOut[]>('/api/incidents', { authenticated: true })
+}
+
+export function fetchPlaybook(
+  deviceType: string,
+  state: string,
+): Promise<PlaybookOut> {
+  return request<PlaybookOut>(
+    `/api/playbooks/${encodeURIComponent(deviceType)}/${encodeURIComponent(state)}`,
+    { authenticated: true },
+  )
 }
 
 export function subscribeToStatusStream(

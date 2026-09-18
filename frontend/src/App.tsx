@@ -4,6 +4,7 @@ import AccountPage from '@/components/AccountPage'
 import AdminPanel from '@/components/admin/AdminPanel'
 import AdminRoute from '@/components/AdminRoute'
 import DeviceDetailView from '@/components/DeviceDetailView'
+import IncidentView from '@/components/IncidentView'
 import LoginPage from '@/components/LoginPage'
 import MetricsView from '@/components/MetricsView'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -11,9 +12,11 @@ import StabilityView from '@/components/StabilityView'
 import TopologyView from '@/components/TopologyView'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/contexts/AuthContext'
+import { useIncidents } from '@/hooks/useIncidents'
 
 function AppHeader() {
   const { isAuthenticated, username, role, logout } = useAuth()
+  const { incidents } = useIncidents()
   const navigate = useNavigate()
 
   const handleLogout = () => {
@@ -38,6 +41,20 @@ function AppHeader() {
               className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               Stability
+            </Link>
+            <Link
+              to="/incidents"
+              className="flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Incidents
+              {isAuthenticated && incidents.length > 0 && (
+                <span
+                  data-testid="incident-badge"
+                  className="animate-pulse rounded-full bg-red-500 px-2 py-0.5 text-xs font-semibold text-white"
+                >
+                  {incidents.length}
+                </span>
+              )}
             </Link>
             {role === 'admin' && (
               <Link
@@ -134,6 +151,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <StabilityView />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/incidents"
+          element={
+            <ProtectedRoute>
+              <IncidentView />
             </ProtectedRoute>
           }
         />
