@@ -3,8 +3,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
+from app.core.deps import get_current_user
 from app.db.session import get_session
 from app.models.device import Device
+from app.models.user import User
 from app.schemas.history import HistorySampleOut
 from app.services.history_store import history_store
 
@@ -13,7 +15,9 @@ router = APIRouter(prefix="/api/history", tags=["history"])
 
 @router.get("/{device_id}", response_model=list[HistorySampleOut])
 def get_device_history(
-    device_id: str, session: Session = Depends(get_session)
+    device_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> list[HistorySampleOut]:
     # A real device with no samples yet is a valid empty list, not a 404; only
     # an unknown device_id (not in the Device table) is a 404.

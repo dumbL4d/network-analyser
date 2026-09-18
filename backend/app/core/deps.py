@@ -1,8 +1,9 @@
 """Security dependencies for protected routes.
 
-Defined and ready here but intentionally NOT wired onto the devices, history,
-status, or SSE routes yet. Route protection lands as its own ticket so each
-change stays independently verifiable.
+Routes requiring authentication use ``get_current_user`` (token read from the
+``Authorization: Bearer`` header). The SSE stream is the one exception: the
+browser ``EventSource`` API cannot set request headers, so it authenticates via
+a ``token`` query parameter instead (see ``get_current_user_from_query_token``).
 """
 
 from fastapi import Depends, HTTPException
@@ -25,11 +26,8 @@ def _credentials_error() -> HTTPException:
     )
 
 
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    session: Session = Depends(get_session),
-) -> User:
-    """Resolve a Bearer token to the matching User row, or raise 401."""
+def _resolve_current_user(token: str, session: Session) -> User:
+    """Decode ``token`` and resolve its ``sub`` to a User row, or raise 401."""
     try:
         payload = decode_access_token(token)
     except JWTError:
@@ -44,6 +42,27 @@ async def get_current_user(
         raise _credentials_error()
 
     return user
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    session: Session = Depends(get_session),
+) -> User:
+    """Resolve a Bearer header token to the matching User row, or raise 401."""
+    return _resolve_current_user(token, session)
+
+
+async def get_current_user_from_query_token(
+    token: str,
+    session: Session = Depends(get_session),
+) -> User:
+    """Resolve a ``?token=`` query-parameter JWT to its User row, or raise 401.
+
+    Used ONLY for the SSE stream endpoint. ``EventSource`` cannot set the
+    ``Authorization`` header on its requests, so SSE clients must pass the JWT
+    as a query parameter instead. Do not reuse this for normal JSON endpoints.
+    """
+    return _resolve_current_user(token, session)
 
 
 def require_role(*allowed_roles: str):

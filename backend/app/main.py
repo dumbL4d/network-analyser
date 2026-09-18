@@ -4,14 +4,16 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
+from app.core.deps import get_current_user, get_current_user_from_query_token
 from app.db.seed import seed_devices_from_json
 from app.db.seed_users import seed_default_users
 from app.db.session import init_db
+from app.models.user import User
 from app.routers.auth import router as auth_router
 from app.routers.devices import router as devices_router
 from app.routers.history import router as history_router
@@ -77,14 +79,22 @@ def health_check():
 
 
 @app.get("/api/status")
-def get_status():
+def get_status(current_user: User = Depends(get_current_user)):
     """Non-streaming snapshot of the latest known status of every device."""
     return serialize_snapshot(status_store.get_all())
 
 
 @app.get("/api/stream/status")
-async def stream_status():
+async def stream_status(
+    current_user: User = Depends(get_current_user_from_query_token),
+):
     """Server-Sent Events stream of full status snapshots.
+
+    Auth note: this endpoint is the ONLY one that authenticates via a ``token``
+    query parameter instead of the ``Authorization`` header, because the
+    browser ``EventSource`` API cannot set custom request headers. Clients must
+    connect as ``/api/stream/status?token=<jwt>``. See
+    ``app.core.deps.get_current_user_from_query_token``.
 
     Each client gets its own queue. The generator is cancelled by
     ``EventSourceResponse`` when the client disconnects, which triggers the
