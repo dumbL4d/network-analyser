@@ -10,6 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
 from app.db.seed import seed_devices_from_json
+from app.db.seed_users import seed_default_users
 from app.db.session import init_db
 from app.routers.devices import router as devices_router
 from app.routers.history import router as history_router
@@ -38,6 +39,7 @@ def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
 async def lifespan(app: FastAPI):
     init_db()
     seed_devices_from_json(str(SEED_PATH))
+    seed_default_users()
 
     # Keep a reference on app.state so the task is not garbage collected.
     app.state.poll_task = asyncio.create_task(run_poll_loop())
