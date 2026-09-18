@@ -3,6 +3,7 @@ import type {
   DeviceOut,
   DeviceStatusDTO,
   DeviceUpdate,
+  FlapCountOut,
   HistorySampleOut,
 } from '@/types/device'
 import type { AppSettingsOut, SettingsUpdate } from '@/types/settings'
@@ -132,6 +133,10 @@ export function fetchDeviceHistory(
   return request<HistorySampleOut[]>(`/api/history/${deviceId}`, {
     authenticated: true,
   })
+}
+
+export function fetchFlapCounts(): Promise<FlapCountOut[]> {
+  return request<FlapCountOut[]>('/api/flaps', { authenticated: true })
 }
 
 export function subscribeToStatusStream(

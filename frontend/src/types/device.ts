@@ -57,3 +57,9 @@ export interface HistorySampleOut {
   latency_ms: number | null
   timestamp: string
 }
+
+/** GET /api/flaps row: session-cumulative status-flap count per device. */
+export interface FlapCountOut {
+  device_id: string
+  flap_count: number
+}

@@ -7,6 +7,7 @@ import DeviceDetailView from '@/components/DeviceDetailView'
 import LoginPage from '@/components/LoginPage'
 import MetricsView from '@/components/MetricsView'
 import ProtectedRoute from '@/components/ProtectedRoute'
+import StabilityView from '@/components/StabilityView'
 import TopologyView from '@/components/TopologyView'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/contexts/AuthContext'
@@ -31,6 +32,12 @@ function AppHeader() {
               className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               Metrics
+            </Link>
+            <Link
+              to="/stability"
+              className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Stability
             </Link>
             {role === 'admin' && (
               <Link
@@ -119,6 +126,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <MetricsView />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/stability"
+          element={
+            <ProtectedRoute>
+              <StabilityView />
             </ProtectedRoute>
           }
         />
