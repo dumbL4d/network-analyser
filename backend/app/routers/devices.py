@@ -1,12 +1,11 @@
-"""Read-only devices API: metadata plus rolling latency history."""
+"""Read-only devices metadata API."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.db.session import get_session
 from app.models.device import Device
-from app.schemas.device import DeviceDTO, LatencyPoint
-from app.services.status_store import status_store
+from app.schemas.device import DeviceDTO
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -30,15 +29,3 @@ def get_device(
 ) -> DeviceDTO:
     device = _get_device_or_404(device_id, session)
     return DeviceDTO.model_validate(device)
-
-
-@router.get("/{device_id}/history", response_model=list[LatencyPoint])
-def get_device_history(
-    device_id: str, session: Session = Depends(get_session)
-) -> list[LatencyPoint]:
-    _get_device_or_404(device_id, session)
-    history = status_store.get_history(device_id)
-    return [
-        LatencyPoint(latency_ms=latency_ms, timestamp=timestamp)
-        for latency_ms, timestamp in history
-    ]

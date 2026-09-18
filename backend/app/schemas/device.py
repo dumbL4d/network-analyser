@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict
 
 
@@ -16,10 +14,3 @@ class DeviceDTO(BaseModel):
     notes: str
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class LatencyPoint(BaseModel):
-    """A single historical latency sample for a device."""
-
-    latency_ms: float | None
-    timestamp: datetime
