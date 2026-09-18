@@ -1,5 +1,8 @@
-import { Navigate, Outlet, Route, Routes, useNavigate } from 'react-router-dom'
+import { Link, Navigate, Outlet, Route, Routes, useNavigate } from 'react-router-dom'
 
+import AccountPage from '@/components/AccountPage'
+import AdminPanel from '@/components/admin/AdminPanel'
+import AdminRoute from '@/components/AdminRoute'
 import DeviceDetailView from '@/components/DeviceDetailView'
 import LoginPage from '@/components/LoginPage'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -18,9 +21,27 @@ function AppHeader() {
 
   return (
     <header className="flex h-14 items-center justify-between border-b px-6">
-      <h1 className="text-lg font-semibold tracking-tight">Network Analyser</h1>
+      <div className="flex items-center gap-6">
+        <h1 className="text-lg font-semibold tracking-tight">Network Analyser</h1>
+        {isAuthenticated && role === 'admin' && (
+          <nav className="flex items-center gap-1">
+            <Link
+              to="/admin"
+              className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Admin
+            </Link>
+          </nav>
+        )}
+      </div>
       {isAuthenticated && (
         <div className="flex items-center gap-3">
+          <Link
+            to="/account"
+            className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Change Password
+          </Link>
           <span className="text-sm text-muted-foreground">
             {username}{' '}
             <span className="ml-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
@@ -65,6 +86,22 @@ export default function App() {
           element={
             <ProtectedRoute>
               <DeviceDetailView />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <AdminRoute>
+              <AdminPanel />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path="/account"
+          element={
+            <ProtectedRoute>
+              <AccountPage />
             </ProtectedRoute>
           }
         />
