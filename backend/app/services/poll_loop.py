@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from app.core.config import settings
 from app.db.session import engine
 from app.models.device import Device
+from app.models.settings import AppSettings
 from app.services.history_store import history_store
 from app.services.ping_engine import ping_all
 from app.services.status_store import status_store
@@ -22,23 +23,55 @@ def _load_devices() -> list[tuple[str, str]]:
 
 
 async def run_poll_loop() -> None:
-    """Ping all devices forever, publishing each snapshot to the status store."""
+    """Ping all devices forever, publishing each snapshot to the status store.
+
+    The monitoring-behavior values (poll interval + latency thresholds) are
+    re-read from the DB-backed ``AppSettings`` singleton at the START of every
+    iteration, so admin edits take effect within one cycle without a backend
+    restart. Timeout and privileged mode remain low-level concerns read from
+    the static .env-backed ``Settings`` object.
+    """
     logger.info(
-        "Status poll loop started (interval=%ss)", settings.PING_INTERVAL_SECONDS
+        "Status poll loop started (interval=%ss)",
+        settings.PING_INTERVAL_SECONDS,
     )
+    # Fallback used until the first row read succeeds (and after any error).
+    interval = settings.PING_INTERVAL_SECONDS
 
     while True:
         try:
+            # Singleton row (see AppSettings docstring): no magic id, ever.
+            with Session(engine) as session:
+                app_settings = session.exec(select(AppSettings)).first()
+
+            if app_settings is None:
+                logger.warning(
+                    "AppSettings row missing; using .env defaults for this cycle"
+                )
+                interval = settings.PING_INTERVAL_SECONDS
+                warn_threshold = settings.LATENCY_WARN_MS
+                crit_threshold = settings.LATENCY_CRIT_MS
+            else:
+                interval = app_settings.poll_interval_seconds
+                warn_threshold = app_settings.latency_warn_ms
+                crit_threshold = app_settings.latency_crit_ms
+
             devices = _load_devices()
             results = await ping_all(
                 devices,
                 timeout=settings.PING_TIMEOUT_SECONDS,
                 privileged=settings.PING_PRIVILEGED,
+                warn_threshold=warn_threshold,
+                crit_threshold=crit_threshold,
             )
             status_store.update(results)
             history_store.record(results)
-            logger.info("Status poll complete for %d devices", len(results))
+            logger.info(
+                "Status poll complete for %d devices (interval=%ss)",
+                len(results),
+                interval,
+            )
         except Exception:
             logger.error("Status poll iteration failed; continuing", exc_info=True)
 
-        await asyncio.sleep(settings.PING_INTERVAL_SECONDS)
+        await asyncio.sleep(interval)

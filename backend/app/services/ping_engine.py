@@ -38,8 +38,6 @@ from typing import Literal
 from icmplib import async_ping
 from pydantic import BaseModel
 
-from app.core.config import settings
-
 logger = logging.getLogger(__name__)
 
 StatusKey = Literal["healthy", "degraded", "down", "unknown"]
@@ -80,9 +78,18 @@ def classify_status(
 
 
 async def ping_one(
-    ip: str, device_id: str, timeout: float, privileged: bool
+    ip: str,
+    device_id: str,
+    timeout: float,
+    privileged: bool,
+    warn_threshold: float,
+    crit_threshold: float,
 ) -> DeviceStatus:
     """Ping a single device and return its :class:`DeviceStatus`.
+
+    The latency thresholds come from the caller (the poll loop now supplies
+    the live DB-backed ``AppSettings`` row) rather than being read from the
+    static .env config.
 
     Any exception raised while probing (permission errors, socket errors, ...)
     is caught and reported as ``status="unknown"`` instead of propagating.
@@ -112,8 +119,8 @@ async def ping_one(
     status = classify_status(
         reachable,
         latency_ms,
-        warn_threshold=settings.LATENCY_WARN_MS,
-        crit_threshold=settings.LATENCY_CRIT_MS,
+        warn_threshold=warn_threshold,
+        crit_threshold=crit_threshold,
     )
     return DeviceStatus(
         device_id=device_id,
@@ -124,7 +131,11 @@ async def ping_one(
 
 
 async def ping_all(
-    devices: list[tuple[str, str]], timeout: float, privileged: bool
+    devices: list[tuple[str, str]],
+    timeout: float,
+    privileged: bool,
+    warn_threshold: float,
+    crit_threshold: float,
 ) -> list[DeviceStatus]:
     """Concurrently ping ``devices`` (a list of ``(device_id, ip)`` tuples).
 
@@ -133,5 +144,15 @@ async def ping_all(
     the input list positionally -- no re-sorting is needed.
     """
     return await asyncio.gather(
-        *[ping_one(ip, device_id, timeout, privileged) for device_id, ip in devices]
+        *[
+            ping_one(
+                ip,
+                device_id,
+                timeout,
+                privileged,
+                warn_threshold,
+                crit_threshold,
+            )
+            for device_id, ip in devices
+        ]
     )

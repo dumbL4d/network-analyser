@@ -11,12 +11,14 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.config import settings
 from app.core.deps import get_current_user, get_current_user_from_query_token
 from app.db.seed import seed_devices_from_json
+from app.db.seed_settings import seed_default_settings
 from app.db.seed_users import seed_default_users
 from app.db.session import init_db
 from app.models.user import User
 from app.routers.auth import router as auth_router
 from app.routers.devices import router as devices_router
 from app.routers.history import router as history_router
+from app.routers.settings import router as settings_router
 from app.services.ping_engine import DeviceStatus
 from app.services.poll_loop import run_poll_loop
 from app.services.status_store import status_store
@@ -43,6 +45,7 @@ async def lifespan(app: FastAPI):
     init_db()
     seed_devices_from_json(str(SEED_PATH))
     seed_default_users()
+    seed_default_settings()
 
     # Keep a reference on app.state so the task is not garbage collected.
     app.state.poll_task = asyncio.create_task(run_poll_loop())
@@ -71,6 +74,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(devices_router)
 app.include_router(history_router)
+app.include_router(settings_router)
 
 
 @app.get("/api/health", status_code=200)
