@@ -19,6 +19,7 @@ from app.routers.auth import router as auth_router
 from app.routers.devices import router as devices_router
 from app.routers.flaps import router as flaps_router
 from app.routers.history import router as history_router
+from app.routers.incidents import router as incidents_router
 from app.routers.settings import router as settings_router
 from app.routers.users import router as users_router
 from app.services.ping_engine import DeviceStatus
@@ -77,6 +78,7 @@ app.include_router(auth_router)
 app.include_router(devices_router)
 app.include_router(flaps_router)
 app.include_router(history_router)
+app.include_router(incidents_router)
 app.include_router(settings_router)
 app.include_router(users_router)
 
