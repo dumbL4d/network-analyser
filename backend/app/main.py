@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.db.seed import seed_devices_from_json
 from app.db.seed_users import seed_default_users
 from app.db.session import init_db
+from app.routers.auth import router as auth_router
 from app.routers.devices import router as devices_router
 from app.routers.history import router as history_router
 from app.services.ping_engine import DeviceStatus
@@ -65,6 +66,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+app.include_router(auth_router)
 app.include_router(devices_router)
 app.include_router(history_router)
 

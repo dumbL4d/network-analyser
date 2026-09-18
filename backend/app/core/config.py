@@ -21,5 +21,12 @@ class Settings(BaseSettings):
     # Rolling history
     HISTORY_MAX_SAMPLES: int = 36
 
+    # JWT auth
+    # WARNING: the insecure default below MUST be overridden via env var in any
+    # real deployment. It exists ONLY for local development convenience.
+    JWT_SECRET_KEY: str = "CHANGE_ME_DEV_ONLY_INSECURE_DEFAULT"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 480  # 8h, matching the original tool's session TTL
+
 
 settings = Settings()
