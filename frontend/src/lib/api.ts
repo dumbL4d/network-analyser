@@ -7,9 +7,35 @@ import type {
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 
-async function requestJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`)
+export const TOKEN_STORAGE_KEY = 'na_token'
+
+export function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_STORAGE_KEY)
+}
+
+/** Thrown on an HTTP 401. Consuming code detects this to log the user out. */
+export class UnauthorizedError extends Error {
+  constructor() {
+    super('UNAUTHORIZED')
+    this.name = 'UnauthorizedError'
+  }
+}
+
+async function requestJson<T>(
+  path: string,
+  options: { authenticated?: boolean } = {},
+): Promise<T> {
+  const headers: Record<string, string> = {}
+  const token = getStoredToken()
+  if (options.authenticated && token !== null) {
+    headers.Authorization = `Bearer ${token}`
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, { headers })
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new UnauthorizedError()
+    }
     throw new Error(
       `GET ${path} failed: ${response.status} ${response.statusText}`,
     )
@@ -18,20 +44,33 @@ async function requestJson<T>(path: string): Promise<T> {
 }
 
 export async function fetchDevices(): Promise<DeviceOut[]> {
-  return requestJson<DeviceOut[]>('/api/devices')
+  return requestJson<DeviceOut[]>('/api/devices', { authenticated: true })
 }
 
 export async function fetchDeviceHistory(
   deviceId: string,
 ): Promise<HistorySampleOut[]> {
-  return requestJson<HistorySampleOut[]>(`/api/history/${deviceId}`)
+  return requestJson<HistorySampleOut[]>(`/api/history/${deviceId}`, {
+    authenticated: true,
+  })
 }
 
 export function subscribeToStatusStream(
   onUpdate: (data: Record<string, DeviceStatusDTO>) => void,
   onError?: (err: Event) => void,
 ): () => void {
-  const eventSource = new EventSource(`${API_BASE_URL}/api/stream/status`)
+  // The backend's SSE endpoint authenticates via a `token` query parameter
+  // (EventSource cannot set an Authorization header), so the stored JWT is
+  // appended to the URL. Without a token there is nothing to authenticate with
+  // and no connection should be attempted.
+  const token = getStoredToken()
+  if (token === null) {
+    return () => {}
+  }
+
+  const eventSource = new EventSource(
+    `${API_BASE_URL}/api/stream/status?token=${encodeURIComponent(token)}`,
+  )
 
   const handleMessage = (event: MessageEvent<string>) => {
     try {
