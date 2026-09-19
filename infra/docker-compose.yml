@@ -102,20 +102,69 @@ services:
       warehouse-net:
         ipv4_address: 10.99.0.40
 
-  # TODO: uncomment once backend/Dockerfile exists
-  # backend:
-  #   build:
-  #     context: ../backend
-  #   # Dockerfile added in a later ticket
-  #   depends_on:
-  #     - sim-fw-01
-  #   networks:
-  #     - warehouse-net
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    # icmplib pings devices over raw ICMP sockets (Ticket 1.2), so CAP_NET_RAW
+    # is required or the backend cannot reach the sim-* devices. Confirmed in
+    # Tickets 6.1/6.2 standalone verification.
+    cap_add:
+      - NET_RAW
+    ports:
+      - "8000:8000"
+    # SQLite persistence: named volume survives container recreation (down/up,
+    # rebuilds). The image pre-creates /app/data so a volume-less run also works.
+    volumes:
+      - backend-data:/app/data
+      # Read-only reference topology. On a fresh DB the backend seeds the 11
+      # sim-* devices from here (seed.py resolves /app/infra/devices.seed.json
+      # as the repo-layout path); swap in real device IPs here per deployment.
+      - ../infra/devices.seed.json:/app/infra/devices.seed.json:ro
+    networks:
+      warehouse-net:
+        # Not DHCP. On the very first parallel start Docker's bridge IPAM handed
+        # the previously-DHCP'd backend 10.99.0.1 -- statically reserved for
+        # sim-fw-01 -- so sim-fw-01 failed to start with "Address already in
+        # use". Nothing pings the backend (it only makes outbound ICMP, per
+        # Tickets 1.2/6.1), so any free address works; pinning one (.99, clear
+        # of the sims' statics >= .40) makes startup deterministic.
+        ipv4_address: 10.99.0.99
+    environment:
+      # REQUIRED and never the insecure dev default from config.py. The `:?`
+      # interpolation fails startup if unset, so a missing infra/.env cannot
+      # silently ship with the development secret. Generate with:
+      #   openssl rand -hex 32
+      JWT_SECRET_KEY: '${JWT_SECRET_KEY:?set JWT_SECRET_KEY in infra/.env (see infra/.env.example)}'
+      # JSON-array form is what pydantic-settings expects for the list[str]
+      # CORS_ORIGINS field (verified concretely in Ticket 6.2). Allows the
+      # Vite dev origin (:5173) and the containerized nginx origin (:8080).
+      CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173","http://localhost:8080"]}'
+    restart: unless-stopped
+    # No depends_on on the sim-* devices on purpose: Compose would not model
+    # them usefully (they are not a formal dependency), and a monitoring tool
+    # correctly reports devices as down until they come online -- the same
+    # behavior a real deployment expects when hardware powers up independently.
 
-  # TODO: uncomment once frontend/Dockerfile exists
-  # frontend:
-  #   build:
-  #     context: ../frontend
-  #   # Dockerfile added in a later ticket
-  #   networks:
-  #     - warehouse-net
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # Compile-time Vite var (baked into the bundle at build time): the
+        # address the END USER'S BROWSER uses to reach the backend. The browser
+        # -- not this container -- makes the API calls, so this defaults to the
+        # host-local address for local testing and should be set to the server's
+        # LAN-reachable host/port for a real deployment.
+        VITE_API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    # Deliberately NO networks entry: this container only serves static files
+    # over the published :8080 port. It never talks to the backend or the
+    # sim-* devices itself (the browser does, out-of-band), so attaching it to
+    # warehouse-net would add nothing. No volume needed either: the bundle is
+    # fully baked into the image.
+
+volumes:
+  backend-data:
