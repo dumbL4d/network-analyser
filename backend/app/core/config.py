@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
     DATABASE_PATH: str = "./data/network_analyser.db"
+    # Optional absolute/relative path to the devices seed JSON. When unset,
+    # main.py falls back to the repo-root layout (local dev) or ./infra next to
+    # the working directory (Docker image). Making it configurable lets a
+    # deployed container point at a mounted read-only copy of the seed file.
+    SEED_PATH: str | None = None
 
     # Ping engine
     # True -> raw ICMP sockets (needs root / CAP_NET_RAW).

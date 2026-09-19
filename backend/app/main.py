@@ -32,6 +32,25 @@ logging.basicConfig(level=logging.INFO)
 SEED_PATH = Path(__file__).resolve().parents[2] / "infra" / "devices.seed.json"
 
 
+def resolve_seed_path() -> Path:
+    """Locate the devices seed JSON with production container deploy in mind.
+
+    Priority:
+    1. ``SEED_PATH`` env var (configurable via ``settings``) -- lets a
+       deployment point at a mounted read-only copy of ``devices.seed.json``.
+    2. Repo-root layout (``<repo>/infra/devices.seed.json``) -- local
+       development from a git checkout.
+    3. ``./infra/devices.seed.json`` relative to the working directory -- the
+       ``/app`` layout assumption inside the production image.
+    """
+    if settings.SEED_PATH is not None:
+        return Path(settings.SEED_PATH)
+    repo_layout = Path(__file__).resolve().parents[2] / "infra" / "devices.seed.json"
+    if repo_layout.exists():
+        return repo_layout
+    return Path.cwd() / "infra" / "devices.seed.json"
+
+
 def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
     """Shape the store's state into the JSON payload sent to clients."""
     return {
@@ -47,7 +66,7 @@ def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    seed_devices_from_json(str(SEED_PATH))
+    seed_devices_from_json(str(resolve_seed_path()))
     seed_default_users()
     seed_default_settings()
 

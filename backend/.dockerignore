@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+scripts/__pycache__/
+*.pyc
+*.md
+.env
+requirements-dev.txt
+data/*.db

@@ -1,10 +1,13 @@
 import json
+import logging
 from pathlib import Path
 
 from sqlmodel import Session, select
 
 from app.db.session import engine
 from app.models.device import Device
+
+logger = logging.getLogger(__name__)
 
 
 def _topological_order(devices: list[dict]) -> list[dict]:
@@ -30,6 +33,18 @@ def _topological_order(devices: list[dict]) -> list[dict]:
 
 
 def seed_devices_from_json(json_path: str) -> None:
+    """Seed devices from the JSON topology file if present.
+
+    A missing seed file is NOT a startup error: a deployment may seed devices
+    via the admin API instead of a mounted file, so skip gracefully when the
+    file is absent (e.g. a volume-less container). The Docker image relies on
+    this to boot without a mount; infra wiring can then mount a read-only copy
+    of ``infra/devices.seed.json``.
+    """
+    if not Path(json_path).exists():
+        logger.warning("Device seed file not found at %s -- skipping device seed", json_path)
+        return
+
     devices_data = json.loads(Path(json_path).read_text())
 
     inserted = 0
