@@ -14,8 +14,13 @@ import type {
   UserOut,
 } from '@/types/user'
 
+// Vite env vars are compile-time (embedded into the static JS bundle at build
+// time -- a plain SPA has no runtime environment to read from), so the Docker
+// image bakes VITE_API_BASE_URL in via a build ARG. The default keeps the
+// local `npm run dev` workflow from every earlier ticket working unchanged.
+// See frontend/.env.example for deployment guidance.
 export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export const TOKEN_STORAGE_KEY = 'na_token'
 
