@@ -24,6 +24,7 @@ from app.services.debounce import (
     SEVERITY,
     Debouncer,
     DebounceState,
+    state_from_history,
     step,
 )
 from tests.helpers import make_status
@@ -387,3 +388,38 @@ def test_state_of_a_device_that_is_no_longer_polled_is_dropped():
     # is accepted at once, while "a" is still one lost ping short of down.
     confirmed = debouncer.apply([make_status("a", "down"), make_status("b", "down")])
     assert [r.status for r in confirmed] == ["healthy", "down"]
+
+
+# --- rebuilding state after a restart ------------------------------------------
+
+
+def test_state_from_history_equals_the_state_the_machine_had():
+    raws = ["healthy", "healthy", "down", "healthy", "down", "down"]
+    state, _ = feed(None, raws)
+
+    rebuilt = state_from_history(state.confirmed, raws)
+
+    assert rebuilt == state
+    # ...so the next result is judged exactly as it would have been.
+    assert step(rebuilt, "down") == step(state, "down")
+    assert step(rebuilt, "down").confirmed == "down"
+
+
+def test_state_from_history_keeps_only_the_results_the_machine_remembers():
+    raws = ["down"] * 36  # as many samples as the history cache reloads
+
+    state = state_from_history("down", raws)
+
+    assert state.recent == ("down",) * MAX_THRESHOLD
+    # The streak can only be counted as far back as the stored results go.
+    assert (state.consecutive_failures, state.consecutive_successes) == (36, 0)
+
+
+def test_a_restored_device_is_not_treated_as_never_seen():
+    debouncer = Debouncer()
+    debouncer.restore({"a": state_from_history("healthy", ["healthy", "healthy"])})
+
+    (confirmed,) = debouncer.apply([make_status("a", "down")])
+
+    # One lost ping after the restart: still healthy, not "first result, so down".
+    assert (confirmed.status, confirmed.raw_status, confirmed.consecutive_failures) == ("healthy", "down", 1)

@@ -23,8 +23,10 @@ from app.routers.incidents import router as incidents_router
 from app.routers.playbooks import router as playbooks_router
 from app.routers.settings import router as settings_router
 from app.routers.users import router as users_router
+from app.services.persistence import warm_caches
 from app.services.ping_engine import DeviceStatus
 from app.services.poll_loop import run_poll_loop
+from app.services.retention import run_retention_loop
 from app.services.status_store import status_store
 
 logging.basicConfig(level=logging.INFO)
@@ -76,19 +78,24 @@ async def lifespan(app: FastAPI):
     seed_devices_from_json(str(resolve_seed_path()))
     seed_default_users()
     seed_default_settings()
+    # Refill the in-memory stores, so history and flap counts survive a restart.
+    warm_caches()
 
-    # Keep a reference on app.state so the task is not garbage collected.
-    # POLL_ENABLED=False (the test suite) starts the API without the loop.
-    app.state.poll_task = (
-        asyncio.create_task(run_poll_loop()) if settings.POLL_ENABLED else None
-    )
+    # The background tasks: the poll loop and the hourly retention job. Keep a
+    # reference on app.state so they are not garbage collected.
+    # POLL_ENABLED=False (the test suite) starts the API without them.
+    app.state.poll_task = app.state.retention_task = None
+    if settings.POLL_ENABLED:
+        app.state.poll_task = asyncio.create_task(run_poll_loop())
+        app.state.retention_task = asyncio.create_task(run_retention_loop())
+    tasks = [t for t in (app.state.poll_task, app.state.retention_task) if t is not None]
 
     try:
         yield
     finally:
-        task = app.state.poll_task
-        if task is not None:
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await task
             except asyncio.CancelledError:

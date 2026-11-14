@@ -8,7 +8,7 @@ import type { FlapCountOut } from '@/types/device'
 const FLAP_POLL_MS = 10_000
 
 /**
- * Session flap counts, fetched on mount and re-polled every 10s so the
+ * Flap counts, fetched on mount and re-polled every 10s so the
  * Stability view tracks new flap events without a manual refresh.
  */
 export function useFlapCounts() {

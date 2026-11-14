@@ -54,27 +54,34 @@ def test_a_missing_seed_file_is_skipped_not_fatal(db, tmp_path):
     assert _row_counts()[0] == 11
 
 
-def test_poll_loop_is_not_started_when_poll_enabled_is_false(db):
+def test_background_tasks_are_not_started_when_poll_enabled_is_false(db):
     assert settings.POLL_ENABLED is False  # pinned in conftest.py
 
     with TestClient(main.app):
         assert main.app.state.poll_task is None
+        assert main.app.state.retention_task is None
 
 
-def test_poll_loop_runs_for_the_lifetime_of_the_app_when_enabled(db, monkeypatch):
-    started: list[bool] = []
+def test_background_tasks_run_for_the_lifetime_of_the_app_when_enabled(db, monkeypatch):
+    started: list[str] = []
 
-    async def fake_poll_loop() -> None:
-        started.append(True)
-        await asyncio.Event().wait()  # like the real loop: runs until cancelled
+    def fake_loop(name: str):
+        async def loop() -> None:
+            started.append(name)
+            await asyncio.Event().wait()  # like the real loops: runs until cancelled
 
-    monkeypatch.setattr(main, "run_poll_loop", fake_poll_loop)
+        return loop
+
+    monkeypatch.setattr(main, "run_poll_loop", fake_loop("poll"))
+    monkeypatch.setattr(main, "run_retention_loop", fake_loop("retention"))
     monkeypatch.setattr(settings, "POLL_ENABLED", True)
 
     with TestClient(main.app) as client:
-        task = main.app.state.poll_task
+        poll_task = main.app.state.poll_task
+        retention_task = main.app.state.retention_task
         assert client.get("/api/health").status_code == 200
-        assert started == [True]
-        assert not task.done()
+        assert sorted(started) == ["poll", "retention"]
+        assert not poll_task.done() and not retention_task.done()
 
-    assert task.cancelled()  # shutdown cancelled it
+    # Shutdown cancelled both.
+    assert poll_task.cancelled() and retention_task.cancelled()

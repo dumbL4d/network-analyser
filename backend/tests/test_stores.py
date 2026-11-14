@@ -1,8 +1,10 @@
 """Unit tests for the three in-memory stores (fresh instances, no database)."""
 
+from datetime import datetime, timedelta, timezone
+
 from app.core.config import settings
-from app.services.flap_store import FlapStore
-from app.services.history_store import HistoryStore
+from app.services.flap_store import FlapStore, Transition
+from app.services.history_store import HistorySample, HistoryStore
 from app.services.status_store import StatusStore
 from tests.helpers import make_status
 
@@ -62,6 +64,22 @@ def test_history_returns_a_copy():
     assert len(store.get_history("a")) == 1
 
 
+def test_history_load_replaces_a_devices_samples_and_keeps_the_newest_36():
+    start = datetime(2026, 11, 15, 10, 0, 0, tzinfo=timezone.utc)
+    stored_samples = [HistorySample(float(i), start + timedelta(seconds=10 * i)) for i in range(40)]
+    store = HistoryStore()
+    store.record([make_status("a", "healthy", 99.0), make_status("b", "healthy", 5.0)])
+
+    store.load("a", stored_samples)  # what the startup warm-up does
+
+    assert store.get_history("a") == stored_samples[4:]
+    assert [sample.latency_ms for sample in store.get_history("b")] == [5.0]  # others untouched
+    # New readings carry on from the loaded ones.
+    store.record([make_status("a", "healthy", 123.0)])
+    assert store.get_history("a")[-1].latency_ms == 123.0
+    assert len(store.get_history("a")) == 36
+
+
 # --- FlapStore -------------------------------------------------------------------
 
 
@@ -111,6 +129,58 @@ def test_flap_counts_are_returned_as_a_copy():
     store.record([make_status("a", "down")])
 
     store.get_flap_counts()["a"] = 99
+
+    assert store.get_flap_counts() == {"a": 1}
+
+
+def test_record_returns_the_status_changes_it_found():
+    store = FlapStore()
+    assert store.record([make_status("a", "healthy"), make_status("b", "healthy")]) == []
+
+    a_down = make_status("a", "down")
+    b_same = make_status("b", "healthy")
+
+    # One Transition per changed device: who, when, from what, to what.
+    assert store.record([a_down, b_same]) == [Transition("a", a_down.timestamp, "healthy", "down")]
+
+
+def test_flap_counts_can_be_limited_to_changes_since_a_point_in_time():
+    now = datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+    store = FlapStore()
+    for age_days, status in [(40, "healthy"), (35, "down"), (10, "healthy"), (1, "down")]:
+        store.record([make_status("a", status, timestamp=now - timedelta(days=age_days))])
+    store.record([make_status("b", "healthy", timestamp=now - timedelta(days=40))])
+    store.record([make_status("b", "down", timestamp=now - timedelta(days=35))])
+
+    assert store.get_flap_counts() == {"a": 3, "b": 1}  # everything remembered
+    # Only the changes in the last 30 days; "b" has none and is left out.
+    assert store.get_flap_counts(since=now - timedelta(days=30)) == {"a": 2}
+    assert store.get_flap_counts() == {"a": 3, "b": 1}  # counting does not forget
+
+
+def test_restore_brings_back_last_statuses_and_past_changes():
+    now = datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+    store = FlapStore()
+
+    store.restore({"a": "down", "b": "healthy"}, {"a": [now - timedelta(hours=2), now - timedelta(hours=1)]})
+
+    assert store.get_flap_counts() == {"a": 2}
+    # The restored last status is what the next observation is compared with,
+    # so it is not treated as a first observation: "a" is unchanged (still
+    # down), "b" has changed.
+    b_down = make_status("b", "down")
+    assert store.record([make_status("a", "down"), b_down]) == [
+        Transition("b", b_down.timestamp, "healthy", "down")
+    ]
+    assert store.get_flap_counts() == {"a": 2, "b": 1}
+
+
+def test_forget_before_drops_expired_changes():
+    now = datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+    store = FlapStore()
+    store.restore({}, {"a": [now - timedelta(days=40), now - timedelta(days=1)], "b": [now - timedelta(days=40)]})
+
+    store.forget_before(now - timedelta(days=30))
 
     assert store.get_flap_counts() == {"a": 1}
 

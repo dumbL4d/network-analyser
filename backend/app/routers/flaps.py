@@ -1,15 +1,20 @@
-"""Session-based flap counts for every known device.
+"""Flap counts for every known device.
 
 Read-only, any authenticated user (same tier as /api/status, /api/history and
-/api/devices). Counts are in-memory and reset on backend restart. The response
+/api/devices). A flap is a confirmed status change; the count covers the last
+``TRANSITION_RETENTION_DAYS`` days and survives a backend restart, because
+every change is also stored in the ``status_transition`` table. The response
 includes every device currently in the ``Device`` table -- devices with no
 recorded flaps come back with ``flap_count: 0`` so a healthy system is
 explicitly "all stable" rather than silently omitting entries.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
+from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import get_session
 from app.models.device import Device
@@ -31,7 +36,10 @@ def list_flap_counts(
     tiebreaker, so the most flapping devices rank first (mirroring the
     original tool's "ranked by flap count" behaviour).
     """
-    flap_counts = flap_store.get_flap_counts()
+    window_start = datetime.now(timezone.utc) - timedelta(
+        days=settings.TRANSITION_RETENTION_DAYS
+    )
+    flap_counts = flap_store.get_flap_counts(since=window_start)
     devices = session.exec(select(Device)).all()
 
     results = [

@@ -18,9 +18,9 @@ const ABOVE_THRESHOLD_FILL = '#f59e0b'
 const BELOW_THRESHOLD_FILL = '#3b82f6'
 const DEFAULT_THRESHOLD = 3
 
-// Flap counts are session-only: the backend's in-memory FlapStore resets on
-// every backend restart (mirroring the original tool). No special UI treatment
-// is needed -- just document it here for future maintainers.
+// A flap is a confirmed status change. The backend stores every change and
+// counts the ones inside its retention window (30 days unless configured
+// otherwise), so the counts survive a backend restart.
 
 export default function StabilityView() {
   const { flapCounts, loading, error } = useFlapCounts()
@@ -82,7 +82,8 @@ export default function StabilityView() {
       <div className="mb-4">
         <h1 className="text-xl font-semibold">Stability</h1>
         <p className="text-sm text-muted-foreground">
-          Devices ranked by status-flap count since backend start (session-only).
+          Devices ranked by confirmed status changes over the retained history
+          (the last 30 days by default).
         </p>
       </div>
 
@@ -90,7 +91,7 @@ export default function StabilityView() {
         <Card data-testid="stability-empty">
           <CardContent className="p-8 text-center">
             <p className="text-sm text-muted-foreground">
-              No flapping events this session — all devices stable
+              No flapping events in the retained history — all devices stable
             </p>
           </CardContent>
         </Card>

@@ -5,6 +5,8 @@ import type {
   DeviceUpdate,
   FlapCountOut,
   HistorySampleOut,
+  HistoryWindow,
+  HistoryWindowOut,
 } from '@/types/device'
 import type { IncidentOut, PlaybookOut } from '@/types/incident'
 import type { AppSettingsOut, SettingsUpdate } from '@/types/settings'
@@ -139,6 +141,20 @@ export function fetchDeviceHistory(
   return request<HistorySampleOut[]>(`/api/history/${deviceId}`, {
     authenticated: true,
   })
+}
+
+/**
+ * A longer time range, read from the database. The backend picks the
+ * resolution (raw samples or min/avg/max buckets) and reports which it used.
+ */
+export function fetchDeviceHistoryWindow(
+  deviceId: string,
+  window: HistoryWindow,
+): Promise<HistoryWindowOut> {
+  return request<HistoryWindowOut>(
+    `/api/history/${deviceId}?window=${window}`,
+    { authenticated: true },
+  )
 }
 
 export function fetchFlapCounts(): Promise<FlapCountOut[]> {

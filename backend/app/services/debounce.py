@@ -27,6 +27,7 @@ every raw result is confirmed at once, i.e. debouncing is off.
 Everything here is pure and in-memory: no I/O, no database, no clock.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.services.ping_engine import DeviceStatus, StatusKey
@@ -103,11 +104,41 @@ def step(
     )
 
 
+def state_from_history(confirmed: StatusKey, raws: Sequence[StatusKey]) -> DebounceState:
+    """Rebuild a device's state from stored results.
+
+    ``confirmed`` is its last confirmed status and ``raws`` its most recent raw
+    results, oldest first. Used at startup, so that a restart does not turn the
+    next poll into a "first-ever result". The streak counters can only count as
+    far back as ``raws`` goes.
+    """
+    failures = 0
+    for raw in reversed(raws):
+        if raw == "healthy":
+            break
+        failures += 1
+    successes = 0
+    for raw in reversed(raws):
+        if raw != "healthy":
+            break
+        successes += 1
+    return DebounceState(
+        confirmed=confirmed,
+        recent=tuple(raws[-MAX_THRESHOLD:]),
+        consecutive_failures=failures,
+        consecutive_successes=successes,
+    )
+
+
 class Debouncer:
     """Holds the :class:`DebounceState` of every device between poll cycles."""
 
     def __init__(self) -> None:
         self._states: dict[str, DebounceState] = {}
+
+    def restore(self, states: dict[str, DebounceState]) -> None:
+        """Reload device states that were rebuilt from the database."""
+        self._states.update(states)
 
     def apply(
         self,

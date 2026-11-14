@@ -140,6 +140,13 @@ services:
       # CORS_ORIGINS field (verified concretely in Ticket 6.2). Allows the
       # Vite dev origin (:5173) and the containerized nginx origin (:8080).
       CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173","http://localhost:8080"]}'
+      # Data retention (see "Data persistence and retention" in ../README.md).
+      # The defaults are the same as in backend/app/core/config.py; override
+      # them in infra/.env.
+      RAW_RETENTION_HOURS: ${RAW_RETENTION_HOURS:-24}
+      ROLLUP_RETENTION_DAYS: ${ROLLUP_RETENTION_DAYS:-30}
+      TRANSITION_RETENTION_DAYS: ${TRANSITION_RETENTION_DAYS:-30}
+      RETENTION_INTERVAL_SECONDS: ${RETENTION_INTERVAL_SECONDS:-3600}
     restart: unless-stopped
     # No depends_on on the sim-* devices on purpose: Compose would not model
     # them usefully (they are not a formal dependency), and a monitoring tool

@@ -26,8 +26,20 @@ class Settings(BaseSettings):
     # sets this; nothing is pinged, so devices stay "unknown".
     POLL_ENABLED: bool = True
 
-    # Rolling history
+    # Rolling history: how many recent samples per device are kept in memory
+    # (the hot cache behind the default /api/history response).
     HISTORY_MAX_SAMPLES: int = 36
+
+    # Persistence and retention (app/services/retention.py)
+    # Raw samples older than this are folded into 1-minute rollups.
+    RAW_RETENTION_HOURS: float = 24.0
+    # 1-minute rollups older than this are deleted.
+    ROLLUP_RETENTION_DAYS: float = 30.0
+    # Status transitions older than this are deleted. It is also the window
+    # over which /api/flaps counts flaps.
+    TRANSITION_RETENTION_DAYS: float = 30.0
+    # How often the retention job runs.
+    RETENTION_INTERVAL_SECONDS: float = 3600.0
 
     # JWT auth
     # WARNING: the insecure default below MUST be overridden via env var in any

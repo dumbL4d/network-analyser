@@ -65,7 +65,37 @@ export interface HistorySampleOut {
   timestamp: string
 }
 
-/** GET /api/flaps row: session-cumulative status-flap count per device. */
+/** Time ranges GET /api/history/{id}?window=... accepts. */
+export const HISTORY_WINDOWS = ['1h', '6h', '24h', '7d', '30d'] as const
+export type HistoryWindow = (typeof HISTORY_WINDOWS)[number]
+
+/** A chart's time range. 'live' is the recent in-memory samples (no window). */
+export type HistoryRange = 'live' | HistoryWindow
+
+/** One point of a history: a raw reading, or a time bucket (min / avg / max). */
+export interface HistoryPoint {
+  timestamp: string
+  /** The reading, or the bucket's average. Null when nothing replied. */
+  latency_ms: number | null
+  min_ms: number | null
+  max_ms: number | null
+  /** Polls this point stands for (1 for a raw reading). */
+  sample_count: number
+  /** How many of those polls got no reply. */
+  fail_count: number
+}
+
+/** GET /api/history/{id}?window=... response. */
+export interface HistoryWindowOut {
+  device_id: string
+  window: HistoryWindow
+  /** 'raw', or the bucket size the backend used: '1m', '5m', '30m', '2h'. */
+  resolution: string
+  resolution_seconds: number | null
+  points: HistoryPoint[]
+}
+
+/** GET /api/flaps row: confirmed status changes of a device in the flap window. */
 export interface FlapCountOut {
   device_id: string
   flap_count: number

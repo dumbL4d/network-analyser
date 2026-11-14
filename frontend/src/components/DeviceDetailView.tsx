@@ -1,22 +1,35 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
 
+import TimeRangeSelect from '@/components/TimeRangeSelect'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDeviceHistory } from '@/hooks/useDeviceHistory'
 import { useDevices } from '@/hooks/useDevices'
 import { useStatusStream } from '@/hooks/useStatusStream'
+import {
+  describeResolution,
+  formatTick,
+  toChartData,
+  type ChartDatum,
+} from '@/lib/history'
 import { getStatusColor } from '@/lib/statusStyles'
 import { cn } from '@/lib/utils'
-import type { DeviceOut, DeviceStatusDTO, HistorySampleOut } from '@/types/device'
+import type {
+  DeviceOut,
+  DeviceStatusDTO,
+  HistoryPoint,
+  HistoryRange,
+} from '@/types/device'
 
 function BackToTopology() {
   return (
@@ -44,26 +57,40 @@ function formatLatency(latencyMs: number | null | undefined): string {
     : `${latencyMs.toFixed(2)} ms`
 }
 
-function HistoryChart({ history }: { history: HistorySampleOut[] }) {
-  const chartData = history.map((sample, index) => ({
-    index,
-    latency_ms: sample.latency_ms,
-    timestamp: sample.timestamp,
-  }))
+function HistoryChart({
+  history,
+  range,
+  bucketed,
+}: {
+  history: HistoryPoint[]
+  range: HistoryRange
+  /** True when each point is a time bucket (min / avg / max), not one poll. */
+  bucketed: boolean
+}) {
+  const chartData = toChartData(history)
 
-  // Simple heuristic: red when the most recent sample is a down/null sample.
-  const lastSample = history.length ? history[history.length - 1] : null
-  const stroke = lastSample?.latency_ms === null ? '#ef4444' : '#3b82f6'
+  // Simple heuristic: red when the most recent point got no reply.
+  const lastPoint = history.length ? history[history.length - 1] : null
+  const stroke = lastPoint?.latency_ms === null ? '#ef4444' : '#3b82f6'
 
   return (
     <div className="h-64 w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart
+        <ComposedChart
           data={chartData}
           margin={{ top: 8, right: 16, bottom: 8, left: 0 }}
         >
           <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-          <XAxis dataKey="index" tick={{ fontSize: 11 }} />
+          <XAxis
+            dataKey="index"
+            tick={{ fontSize: 11 }}
+            minTickGap={40}
+            tickFormatter={(index: number) =>
+              chartData[index]
+                ? formatTick(chartData[index].timestamp, range)
+                : ''
+            }
+          />
           <YAxis
             tick={{ fontSize: 11 }}
             width={52}
@@ -71,30 +98,49 @@ function HistoryChart({ history }: { history: HistorySampleOut[] }) {
             domain={[0, 'auto']}
           />
           <Tooltip
-            formatter={(value) =>
-              value === null
+            formatter={(value, name) => {
+              if (name === 'band') {
+                const [low, high] = value as [number, number]
+                return [`${low.toFixed(2)} – ${high.toFixed(2)} ms`, 'min – max']
+              }
+              return value === null
                 ? ['down (no latency)', 'latency']
-                : [`${value} ms`, 'latency']
-            }
-            labelFormatter={(label, payload) => {
-              const timestamp = (
-                payload?.[0]?.payload as { timestamp?: string } | undefined
-              )?.timestamp
-              return timestamp
-                ? `Sample ${label} · ${new Date(timestamp).toLocaleTimeString()}`
-                : `Sample ${label}`
+                : [
+                    `${Number(value).toFixed(2)} ms`,
+                    bucketed ? 'average' : 'latency',
+                  ]
+            }}
+            labelFormatter={(_label, payload) => {
+              const datum = payload?.[0]?.payload as ChartDatum | undefined
+              if (!datum) return ''
+              const when = new Date(datum.timestamp).toLocaleString()
+              return bucketed
+                ? `${when} · ${datum.sample_count} polls, ${datum.fail_count} without a reply`
+                : when
             }}
           />
+          {/* The min–max band only means something for buckets. */}
+          {bucketed && (
+            <Area
+              type="monotone"
+              dataKey="band"
+              stroke="none"
+              fill={stroke}
+              fillOpacity={0.18}
+              isAnimationActive={false}
+              connectNulls={false}
+            />
+          )}
           <Line
             type="monotone"
             dataKey="latency_ms"
             stroke={stroke}
             strokeWidth={2}
-            dot={{ r: 2 }}
+            dot={chartData.length > 60 ? false : { r: 2 }}
             isAnimationActive={false}
             connectNulls={false}
           />
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   )
@@ -143,11 +189,13 @@ export default function DeviceDetailView() {
   const { deviceId = '' } = useParams<{ deviceId: string }>()
   const { devices, loading: devicesLoading, error: devicesError } = useDevices()
   const { statuses } = useStatusStream()
+  const [range, setRange] = useState<HistoryRange>('live')
   const {
     history,
+    resolution,
     loading: historyLoading,
     error: historyError,
-  } = useDeviceHistory(deviceId)
+  } = useDeviceHistory(deviceId, range)
 
   const device = devices.find((item) => item.id === deviceId)
   const status = statuses[deviceId]?.status ?? 'unknown'
@@ -241,8 +289,9 @@ export default function DeviceDetailView() {
 
         <div className="space-y-6">
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-base">Latency history</CardTitle>
+              <TimeRangeSelect value={range} onChange={setRange} />
             </CardHeader>
             <CardContent>
               {historyError ? (
@@ -255,11 +304,24 @@ export default function DeviceDetailView() {
                 </p>
               ) : history.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No history yet — waiting for the next poll cycle.
+                  {range === 'live'
+                    ? 'No history yet — waiting for the next poll cycle.'
+                    : 'No data in this time range yet.'}
                 </p>
               ) : (
                 <div data-testid="latency-sparkline">
-                  <HistoryChart history={history} />
+                  <HistoryChart
+                    history={history}
+                    range={range}
+                    bucketed={resolution !== 'raw'}
+                  />
+                  <p
+                    data-testid="history-resolution"
+                    className="mt-2 text-xs text-muted-foreground"
+                  >
+                    Resolution: {describeResolution(resolution)} ·{' '}
+                    {history.length} points
+                  </p>
                 </div>
               )}
             </CardContent>

@@ -18,6 +18,7 @@ from app.services.debounce import (
 )
 from app.services.flap_store import flap_store
 from app.services.history_store import history_store
+from app.services.persistence import persist_cycle
 from app.services.ping_engine import PingFn, ping_all
 from app.services.status_store import status_store
 
@@ -45,7 +46,9 @@ async def run_poll_loop(
 
     Each cycle's raw readings go through the debouncer. The status store and
     the flap store receive the CONFIRMED statuses; the history store keeps the
-    raw readings.
+    raw readings. The cycle is then written to the database (one sample per
+    device plus any status transitions) in a worker thread, so the write never
+    blocks the event loop.
 
     ``ping`` and ``sleep`` default to the real ICMP ping and ``asyncio.sleep``.
     They are parameters only so tests can inject fakes and step the loop one
@@ -95,7 +98,17 @@ async def run_poll_loop(
             confirmed = debouncer.apply(results, failure_threshold, recovery_threshold)
             status_store.update(confirmed)
             history_store.record(results)  # raw readings, for the latency charts
-            flap_store.record(confirmed)  # a flap is a CONFIRMED status change
+            # A flap is a CONFIRMED status change.
+            transitions = flap_store.record(confirmed)
+            try:
+                # One transaction per cycle, off the event loop.
+                await asyncio.to_thread(persist_cycle, confirmed, transitions)
+            except Exception:
+                logger.error(
+                    "Could not save this poll cycle to the database; live "
+                    "status is unaffected",
+                    exc_info=True,
+                )
             logger.info(
                 "Status poll complete for %d devices (interval=%ss)",
                 len(results),

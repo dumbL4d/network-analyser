@@ -20,6 +20,10 @@ entire warehouse LAN so the whole system runs on one machine.
 - **Live dashboards** — a Server-Sent Events (SSE) stream pushes full status
   snapshots to every connected browser; latency history, flap counts, and
   incident lists come on top via REST.
+- **History that survives restarts** — every poll and every status change is
+  stored in SQLite. Raw samples are kept for a day, then downsampled to
+  1-minute rollups kept for 30 days; charts can show the last hour up to the
+  last 30 days.
 - **Tree-based incident analysis** — devices are stored as a parent/child tree
   (firewall → switches → PLCs/HMIs/servers). An unhealthy device whose parent
   is also unhealthy is marked **collateral**; one whose parent is healthy is a
@@ -52,9 +56,10 @@ flowchart LR
         PING["Ping engine<br/>(icmplib, async ICMP)"]
         DEB["Debouncer<br/>(raw result to confirmed status)"]
         ST["StatusStore<br/>(snapshot + pub/sub)"]
-        HS["HistoryStore<br/>(rolling deques)"]
-        FS["FlapStore<br/>(flap counts)"]
+        HS["HistoryStore<br/>(recent samples, hot cache)"]
+        FS["FlapStore<br/>(status changes, hot cache)"]
         IA["IncidentAnalysis<br/>(root cause vs collateral)"]
+        RET["Retention job<br/>(hourly rollup + cleanup)"]
         DB[("SQLite<br/>backend-data volume")]
     end
 
@@ -77,6 +82,10 @@ flowchart LR
     DEB -- "confirmed status" --> ST
     DEB -- "confirmed status" --> FS
     POLL -- "raw readings" --> HS
+    POLL -- "samples + transitions, every cycle" --> DB
+    RET --> DB
+    DB -. warm-up at startup .-> HS
+    DB -. warm-up at startup .-> FS
 
     UI -- "loads bundle" --> STATIC
 ```
@@ -92,13 +101,14 @@ user's browser straight to the backend.
 ├── .github/workflows/ci.yml CI: backend tests + coverage, frontend typecheck/lint/build
 ├── backend/                 FastAPI application (Python 3.12)
 │   ├── app/
-│   │   ├── main.py          App factory, lifespan (DB seed + poll loop), SSE endpoint
+│   │   ├── main.py          App factory, lifespan (migrate, seed, warm-up, background tasks), SSE endpoint
 │   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth deps
 │   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
-│   │   ├── models/          Device, User, AppSettings (SQLModel tables)
+│   │   ├── models/          Device, User, AppSettings, and the history tables (SQLModel)
 │   │   ├── routers/         auth, devices, settings, users, history, flaps, incidents, playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
-│   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis
+│   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis,
+│   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention
 │   │   └── data/playbooks.py  Static guided-fix playbook content
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
@@ -122,8 +132,10 @@ user's browser straight to the backend.
 The backend is a single FastAPI app (`backend/app/main.py`) that, at startup
 (`lifespan`), brings the SQLite schema up to date (see
 [Database migrations](#database-migrations)), seeds devices from
-`infra/devices.seed.json`, seeds default users and settings, and launches the
-poll loop as a background `asyncio` task.
+`infra/devices.seed.json`, seeds default users and settings, refills its
+in-memory caches from the database, and launches two background `asyncio`
+tasks: the poll loop and the hourly retention job (see
+[Data persistence and retention](#data-persistence-and-retention)).
 
 ### The poll loop
 
@@ -137,10 +149,11 @@ flowchart TD
     F --> K["debouncer.apply()<br/>raw results in, CONFIRMED status out"]
     F --> H["history_store.record()<br/>raw readings, rolling deques"]
     K --> G["status_store.update()<br/>confirmed status, notify SSE subscribers"]
-    K --> I["flap_store.record()<br/>count confirmed status changes"]
-    G --> J["asyncio.sleep(interval)"]
+    K --> I["flap_store.record()<br/>confirmed status changes"]
+    I --> P["persist_cycle() in a worker thread<br/>samples + transitions, one transaction"]
+    P --> J["asyncio.sleep(interval)"]
+    G --> J
     H --> J
-    I --> J
     J --> C
 ```
 
@@ -149,8 +162,9 @@ singleton at the **start of every cycle**, so an admin editing the poll
 interval, the latency thresholds or the debounce thresholds in the UI takes
 effect within one cycle — no backend restart required.
 
-Setting `POLL_ENABLED=False` starts the API without the poll loop (the test
-suite does this). Nothing is pinged, so every device stays `unknown`.
+Setting `POLL_ENABLED=False` starts the API without the background tasks (the
+test suite does this). Nothing is pinged, so every device stays `unknown`, and
+the retention job does not run.
 
 ### Device status classification
 
@@ -232,9 +246,11 @@ Things to know:
 - Latency history, and the reachability figure in the Metrics view, are built
   from the raw readings. Intermittent loss that never reaches the threshold
   shows up there rather than as a status change or a flap.
-- Debounce state is in memory. After a backend restart each device's first
-  result is accepted at once; a deleted device's state is dropped on the next
-  cycle.
+- Debounce state is held in memory and rebuilt at startup from the stored
+  samples, so a restart does not turn the next poll into a "first result". The
+  exception is a long gap: if a device's last stored poll is more than 10 poll
+  intervals old, its next result is accepted at once.
+- A deleted device's state is dropped on the next cycle.
 
 ### Incident analysis
 
@@ -274,8 +290,8 @@ stepper linked from the static `backend/app/data/playbooks.py`.
 | `POST`   | `/api/devices`                    | **admin**   | Create device (parent/cycle validation)        |
 | `PATCH`  | `/api/devices/{id}`               | **admin**   | Update device                                  |
 | `DELETE` | `/api/devices/{id}`               | **admin**   | Delete device (blocked if it has children)     |
-| `GET`    | `/api/history/{id}`               | user        | Rolling latency history for a device           |
-| `GET`    | `/api/flaps`                      | user        | Flap counts, highest flapper first             |
+| `GET`    | `/api/history/{id}`               | user        | Latency history; `?window=` for longer ranges |
+| `GET`    | `/api/flaps`                      | user        | Flap counts (last 30 days), highest first     |
 | `GET`    | `/api/incidents`                  | user        | Root-cause/collateral incident set             |
 | `GET`    | `/api/playbooks/{type}/{state}`   | user        | Guided-fix playbook for a device type/state    |
 | `GET`    | `/api/settings`                   | user        | Monitoring settings (poll interval, thresholds)|
@@ -304,8 +320,8 @@ flowchart LR
 
     subgraph Views["Authenticated views"]
         T["/ — TopologyView<br/>(@xyflow/react graph of the device tree)"]
-        D["/devices/:id — DeviceDetailView<br/>(latency sparkline + status)"]
-        M["/metrics — MetricsView<br/>(Latency & Status Overview tabs, recharts)"]
+        D["/devices/:id — DeviceDetailView<br/>(latency chart with time range + status)"]
+        M["/metrics — MetricsView<br/>(Latency with time range & Status Overview tabs, recharts)"]
         S["/stability — StabilityView<br/>(flap-count bar ranking)"]
         I["/incidents — IncidentView<br/>(root cause/collateral cards + playbook stepper)"]
         A["/admin — AdminPanel<br/>(Devices / Settings / Users tabs)"]
@@ -323,6 +339,13 @@ flowchart LR
 The live status path is **push** (SSE), while everything else is **pull**
 (REST polling): incidents re-poll every 10 s, flap counts/settings on mount,
 and history per device view.
+
+The latency charts (device detail, and the Latency tab of Metrics) have a
+time-range selector: **Live** (the most recent samples, refreshed every 10 s),
+or the last hour, 6 hours, 24 hours, 7 days or 30 days (refreshed every
+minute). For the longer ranges the backend returns time buckets, and the chart
+draws the average as a line over a shaded min–max band. The resolution in use
+is shown under the chart.
 
 ## Simulated network topology
 
@@ -406,11 +429,14 @@ flowchart LR
   does), so attaching it adds nothing.
 - **13 containers total** when running (11 sims + backend + frontend).
 
-Persisted SQLite data (settings, users, devices) survives `down`/`up` and
-rebuilds via the `backend-data` volume, and the backend upgrades its schema in
-place at startup (see [Database migrations](#database-migrations)). Flap
-counts, latency history and debounce state are in-memory and reset on backend
-restart by design.
+Persisted SQLite data (settings, users, devices, latency history and status
+transitions) survives `down`/`up` and rebuilds via the `backend-data` volume,
+and the backend upgrades its schema in place at startup (see
+[Database migrations](#database-migrations)). Latency history, flap counts and
+debounce state are held in memory for speed, but they are rebuilt from the
+database at startup, so they no longer reset when the backend restarts (see
+[Data persistence and retention](#data-persistence-and-retention)). Only the
+live status snapshot starts empty, until the first poll completes.
 
 ## Running with Docker Compose
 
@@ -458,6 +484,127 @@ docker compose -f infra/docker-compose.yml down   # or the whole stack
 
 Or run the whole stack (sims + backend + frontend) per **`infra/README.md`**.
 
+## Data persistence and retention
+
+Everything the poll loop measures is written to SQLite, so latency history and
+flap counts survive a backend restart.
+
+### Tables
+
+- **`latency_sample`**: one row per device per poll (the raw data). Columns:
+  `device_id`, `ts`, `latency_ms` (null when there was no reply),
+  `raw_status`, `confirmed_status`.
+- **`latency_rollup_1m`**: one row per device per minute. Columns:
+  `device_id`, `bucket_start`, `min`, `avg`, `max`, `sample_count`,
+  `fail_count`.
+- **`status_transition`**: one row per confirmed status change (a flap).
+  Columns: `device_id`, `ts`, `from_status`, `to_status`.
+
+`latency_sample` and `status_transition` are indexed on `(device_id, ts)`, and
+`latency_rollup_1m` is unique on `(device_id, bucket_start)`. All timestamps
+are UTC. In a rollup, `min` / `avg` / `max` cover the polls that got a reply
+and `fail_count` is the number that did not. None of these tables references
+`device`, so the history of a deleted device simply ages out.
+
+### Data lifecycle
+
+```mermaid
+flowchart LR
+    POLL["Poll cycle<br/>(every ~10 s)"] -- "one transaction,<br/>in a worker thread" --> RAW[("latency_sample<br/>raw, kept 24 h")]
+    POLL -- "same transaction" --> TR[("status_transition<br/>kept 30 days")]
+    RAW -- "retention job, hourly:<br/>roll up, then delete" --> ROLL[("latency_rollup_1m<br/>kept 30 days")]
+    ROLL -- "older than 30 days" --> GONE["deleted"]
+    TR -- "older than 30 days" --> GONE
+    RAW -. "startup warm-up" .-> CACHE["In-memory caches:<br/>history, flaps, debounce state"]
+    TR -. "startup warm-up" .-> CACHE
+```
+
+1. **Write.** After every poll cycle the loop stores one `latency_sample` per
+   device, plus a `status_transition` for each confirmed status change, in a
+   single transaction. The write runs in a worker thread
+   (`asyncio.to_thread`), so it never blocks the event loop. If it fails, the
+   error is logged and live monitoring carries on.
+2. **Warm-up.** At startup the in-memory caches are refilled from the
+   database: each device's most recent samples (the 36 behind the default
+   history response), its status changes inside the flap window, and its
+   debounce state.
+3. **Roll up.** A background job runs at startup and then every hour. Raw
+   samples older than `RAW_RETENTION_HOURS` are summarised into 1-minute
+   rollups and deleted.
+4. **Expire.** The same job deletes rollups older than `ROLLUP_RETENTION_DAYS`
+   and transitions older than `TRANSITION_RETENTION_DAYS`.
+
+The rollup is safe to run again at any time. Each batch of raw samples is
+added to the rollups and deleted in the same transaction, so a sample is
+always in exactly one place. If a rollup row for that minute already exists,
+the new samples are merged into it: counts are added, min and max are
+combined, and the average is re-weighted by the number of replies. A minute is
+rolled up only once all of it is older than the cutoff.
+
+### Retention settings
+
+Set these as environment variables (`backend/.env`, or `infra/.env` for the
+Docker deployment):
+
+| Variable                     | Default | Meaning                                                              |
+| ---------------------------- | ------- | -------------------------------------------------------------------- |
+| `RAW_RETENTION_HOURS`        | `24`    | Raw samples older than this are rolled up to 1-minute rows           |
+| `ROLLUP_RETENTION_DAYS`      | `30`    | Rollups older than this are deleted                                  |
+| `TRANSITION_RETENTION_DAYS`  | `30`    | Transitions older than this are deleted; also the flap-count window  |
+| `RETENTION_INTERVAL_SECONDS` | `3600`  | How often the retention job runs                                     |
+| `HISTORY_MAX_SAMPLES`        | `36`    | Recent samples per device kept in memory                             |
+
+With the defaults and 11 devices polled every 10 s, the database settles at
+roughly 95,000 raw rows and 475,000 rollup rows.
+
+### Reading history
+
+`GET /api/history/{id}` without parameters is unchanged: a list of the most
+recent samples, `[{"latency_ms": ..., "timestamp": ...}]`, served from memory.
+
+With `?window=` it reads the database and returns a time range. The resolution
+is chosen by the window, so every range is a few hundred points:
+
+| `window` | Resolution | What a point is                               |
+| -------- | ---------- | --------------------------------------------- |
+| `1h`     | `raw`      | one poll                                      |
+| `6h`     | `1m`       | min / avg / max over 1 minute                 |
+| `24h`    | `5m`       | min / avg / max over 5 minutes                |
+| `7d`     | `30m`      | min / avg / max over 30 minutes               |
+| `30d`    | `2h`       | min / avg / max over 2 hours                  |
+
+```json
+{
+  "device_id": "sw-ot",
+  "window": "24h",
+  "resolution": "5m",
+  "resolution_seconds": 300,
+  "points": [
+    {
+      "timestamp": "2026-11-15T10:00:00Z",
+      "latency_ms": 1.4,
+      "min_ms": 0.9,
+      "max_ms": 3.2,
+      "sample_count": 30,
+      "fail_count": 0
+    }
+  ]
+}
+```
+
+In a bucket, `latency_ms` is the average over the polls that got a reply (null
+if none did). For `raw`, each point is one poll, so `min_ms` and `max_ms` equal
+`latency_ms` and `sample_count` is 1. Buckets are built from the rollups plus
+the raw samples that have not been rolled up yet, so the most recent day is
+always included.
+
+### Flap counts
+
+A flap is a confirmed status change, stored as a `status_transition`.
+`GET /api/flaps` counts each device's transitions over the last
+`TRANSITION_RETENTION_DAYS` days. The response shape is unchanged, and the
+counts survive a restart.
+
 ## Database migrations
 
 The SQLite schema is managed with [Alembic](https://alembic.sqlalchemy.org/).
@@ -472,6 +619,8 @@ its data.
   database from an older version (for example the `backend-data` Docker
   volume) is adopted as it is.
 - `0002` adds `failure_threshold` and `recovery_threshold` to `appsettings`.
+- `0003` adds the history tables: `latency_sample`, `latency_rollup_1m` and
+  `status_transition`.
 
 Every change to a model in `backend/app/models/` needs a migration:
 
@@ -480,7 +629,7 @@ cd backend
 source .venv/bin/activate
 alembic upgrade head      # bring your local database up to date first
 # ...edit the model...
-alembic revision --autogenerate --rev-id 0003 -m "describe the change"
+alembic revision --autogenerate --rev-id 0004 -m "describe the change"
 # review the new file in app/db/migrations/versions/, then:
 alembic upgrade head      # or simply start the backend
 pytest                    # test_migrations.py fails if a model has no migration
@@ -493,6 +642,9 @@ What to check in a generated migration:
 - Batch mode (`render_as_batch=True`) is on, so Alembic rebuilds a table when
   SQLite cannot alter it in place.
 - Use the next number as `--rev-id`, so the history reads `0001`, `0002`, ...
+- A column using the app's `UTCDateTime` type is generated as
+  `app.db.types.UTCDateTime()`. Replace it with `sa.DateTime()` (the same
+  column), so the migration does not import application code.
 
 `alembic current`, `alembic history` and `alembic downgrade -1` are useful
 while developing. The command line works on the same database as the app (the

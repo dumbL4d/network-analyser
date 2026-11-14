@@ -7,24 +7,47 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import inspect
+from sqlalchemy import Table, inspect, select
 
 from app.core.config import settings
 from app.db.session import engine
 from app.models.device import Device
+from app.services.debounce import debouncer
+from app.services.flap_store import flap_store
+from app.services.history_store import history_store
+from app.services.persistence import warm_caches
 from app.services.ping_engine import DeviceStatus, PingFn, StatusKey
 from app.services.poll_loop import run_poll_loop
+from app.services.status_store import status_store
 
 
 def make_status(
-    device_id: str, status: StatusKey, latency_ms: float | None = None
+    device_id: str,
+    status: StatusKey,
+    latency_ms: float | None = None,
+    timestamp: datetime | None = None,
 ) -> DeviceStatus:
     return DeviceStatus(
         device_id=device_id,
         status=status,
         latency_ms=latency_ms,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=timestamp or datetime.now(timezone.utc),
     )
+
+
+def stored(table: Table, *columns: str) -> list[tuple]:
+    """The rows of a table in insertion order, as tuples of ``columns``."""
+    with engine.connect() as connection:
+        rows = connection.execute(select(table).order_by(table.c.id)).all()
+    return [tuple(getattr(row, column) for column in columns) for row in rows]
+
+
+def restart_backend(now: datetime | None = None) -> None:
+    """What a backend restart does to its memory: every in-memory store is
+    emptied, then startup refills them from the database."""
+    for store in (status_store, history_store, flap_store, debouncer):
+        store.__init__()
+    warm_caches(now)
 
 
 def wipe_database() -> None:
@@ -80,8 +103,8 @@ class FakePing:
         return SimpleNamespace(is_alive=is_alive, avg_rtt=avg_rtt)
 
 
-class _StopLoop(BaseException):
-    """Raised by the fake sleep to end ``run_poll_loop``. A ``BaseException``,
+class StopLoop(BaseException):
+    """Raised by a fake sleep to end a background loop. A ``BaseException``,
     so the loop's own ``except Exception`` can never swallow it."""
 
 
@@ -102,10 +125,10 @@ async def run_cycles(
         if after_cycle is not None:
             after_cycle(len(intervals))
         if len(intervals) >= n:
-            raise _StopLoop
+            raise StopLoop
 
     try:
         await run_poll_loop(ping=ping, sleep=fake_sleep)
-    except _StopLoop:
+    except StopLoop:
         pass
     return intervals

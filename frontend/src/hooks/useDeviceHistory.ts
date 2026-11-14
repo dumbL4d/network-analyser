@@ -1,29 +1,31 @@
 import { useEffect, useState } from 'react'
 
-import { fetchDeviceHistory } from '@/lib/api'
-import type { HistorySampleOut } from '@/types/device'
-
-// Known simplification: the backend poll interval is configurable
-// (PING_INTERVAL_SECONDS), but this hook hardcodes the default 10s rather than
-// fetching the backend's configured value.
-const HISTORY_POLL_MS = 10_000
+import { loadHistory, refreshMs } from '@/lib/history'
+import type { HistoryPoint, HistoryRange } from '@/types/device'
 
 interface HistoryState {
-  deviceId: string
-  history: HistorySampleOut[]
+  key: string
+  history: HistoryPoint[]
+  resolution: string
   loading: boolean
   error: string | null
 }
 
 /**
- * Fetches rolling latency history for a device on mount, whenever the device
- * changes, and then polls every 10s while the detail view stays mounted
- * (history is pull-only; it does not arrive over the SSE stream).
+ * Latency history of one device for a time range. Fetches on mount and
+ * whenever the device or the range changes, then re-fetches while the view
+ * stays mounted: every 10s for 'live' (history is pull-only; it does not
+ * arrive over the SSE stream), every minute for the longer ranges.
+ *
+ * Known simplification: the 10s matches the default backend poll interval
+ * rather than the configured one.
  */
-export function useDeviceHistory(deviceId: string) {
+export function useDeviceHistory(deviceId: string, range: HistoryRange = 'live') {
+  const key = `${deviceId}\u0000${range}`
   const [state, setState] = useState<HistoryState>({
-    deviceId,
+    key,
     history: [],
+    resolution: 'raw',
     loading: true,
     error: null,
   })
@@ -32,17 +34,24 @@ export function useDeviceHistory(deviceId: string) {
     let cancelled = false
 
     const load = () => {
-      fetchDeviceHistory(deviceId)
-        .then((data) => {
+      loadHistory(deviceId, range)
+        .then(({ points, resolution }) => {
           if (!cancelled) {
-            setState({ deviceId, history: data, loading: false, error: null })
+            setState({
+              key,
+              history: points,
+              resolution,
+              loading: false,
+              error: null,
+            })
           }
         })
         .catch((err: unknown) => {
           if (!cancelled) {
             setState({
-              deviceId,
+              key,
               history: [],
+              resolution: 'raw',
               loading: false,
               error: err instanceof Error ? err.message : String(err),
             })
@@ -51,22 +60,23 @@ export function useDeviceHistory(deviceId: string) {
     }
 
     load()
-    const interval = setInterval(load, HISTORY_POLL_MS)
+    const interval = setInterval(load, refreshMs(range))
 
     return () => {
       cancelled = true
       clearInterval(interval)
     }
-  }, [deviceId])
+  }, [deviceId, range, key])
 
-  // While the stored state belongs to a previous deviceId, report loading
-  // rather than showing the previous device's samples.
-  if (state.deviceId !== deviceId) {
-    return { history: [], loading: true, error: null }
+  // While the stored state belongs to another device or range, report loading
+  // rather than showing the previous selection's points.
+  if (state.key !== key) {
+    return { history: [], resolution: 'raw', loading: true, error: null }
   }
 
   return {
     history: state.history,
+    resolution: state.resolution,
     loading: state.loading,
     error: state.error,
   }

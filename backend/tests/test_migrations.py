@@ -11,6 +11,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
+from sqlalchemy import inspect
 from sqlmodel import SQLModel
 
 from app.db.session import alembic_config, engine, init_db
@@ -154,6 +155,27 @@ def test_a_new_database_ends_up_with_exactly_the_schema_the_models_describe(empt
     # If this fails, a model was changed without adding a migration for it.
     assert differences == []
     assert _revision() == HEAD
+
+
+def test_history_tables_and_their_indexes_exist_after_upgrading(empty_database):
+    _create_pre_alembic_database()
+
+    init_db()
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        columns = {table: [c["name"] for c in inspector.get_columns(table)] for table in inspector.get_table_names()}
+        indexes = {table: {(i["name"], tuple(i["column_names"])) for i in inspector.get_indexes(table)} for table in columns}
+        uniques = [(u["name"], tuple(u["column_names"])) for u in inspector.get_unique_constraints("latency_rollup_1m")]
+
+    assert columns["latency_sample"] == ["id", "device_id", "ts", "latency_ms", "raw_status", "confirmed_status"]
+    assert columns["latency_rollup_1m"] == [
+        "id", "device_id", "bucket_start", "min", "avg", "max", "sample_count", "fail_count",
+    ]
+    assert columns["status_transition"] == ["id", "device_id", "ts", "from_status", "to_status"]
+    assert ("ix_latency_sample_device_id_ts", ("device_id", "ts")) in indexes["latency_sample"]
+    assert ("ix_status_transition_device_id_ts", ("device_id", "ts")) in indexes["status_transition"]
+    assert uniques == [("uq_latency_rollup_1m_device_id_bucket_start", ("device_id", "bucket_start"))]
 
 
 def test_downgrading_one_step_and_upgrading_again_keeps_the_other_settings(empty_database):

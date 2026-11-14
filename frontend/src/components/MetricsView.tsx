@@ -1,33 +1,51 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Line, LineChart, ResponsiveContainer } from 'recharts'
+import { Area, ComposedChart, Line, ResponsiveContainer } from 'recharts'
 
+import TimeRangeSelect from '@/components/TimeRangeSelect'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAllDeviceHistories } from '@/hooks/useAllDeviceHistories'
 import { useDevices } from '@/hooks/useDevices'
 import { useStatusStream } from '@/hooks/useStatusStream'
+import { describeResolution, toChartData } from '@/lib/history'
 import { computeMedianLatency, computeReachabilityRatio } from '@/lib/metrics'
 import { getStatusColor } from '@/lib/statusStyles'
 import { cn } from '@/lib/utils'
-import type { DeviceStatus, HistorySampleOut } from '@/types/device'
+import type { DeviceStatus, HistoryPoint, HistoryRange } from '@/types/device'
 
 /**
- * Minimal trend sparkline: a bare Recharts LineChart with no axes or labels,
- * sized to fit an inline table row (~100px wide).
+ * Minimal trend sparkline: a bare Recharts chart with no axes or labels,
+ * sized to fit an inline table row (~100px wide). For bucketed history it
+ * draws the average as the line over a shaded min–max band.
  */
-function Sparkline({ history }: { history: HistorySampleOut[] }) {
-  const data = history.map((sample, index) => ({
-    index,
-    latency_ms: sample.latency_ms,
-  }))
-  // Red line while the latest sample is a null/down one; otherwise blue.
+function Sparkline({
+  history,
+  bucketed,
+}: {
+  history: HistoryPoint[]
+  bucketed: boolean
+}) {
+  const data = toChartData(history)
+  // Red line while the latest point got no reply; otherwise blue.
   const last = history.length ? history[history.length - 1].latency_ms : null
   const stroke = last === null ? '#ef4444' : '#3b82f6'
 
   return (
     <div className="h-8 w-24 shrink-0">
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data}>
+        <ComposedChart data={data}>
+          {bucketed && (
+            <Area
+              type="monotone"
+              dataKey="band"
+              stroke="none"
+              fill={stroke}
+              fillOpacity={0.2}
+              isAnimationActive={false}
+              connectNulls={false}
+            />
+          )}
           <Line
             type="monotone"
             dataKey="latency_ms"
@@ -37,7 +55,7 @@ function Sparkline({ history }: { history: HistorySampleOut[] }) {
             isAnimationActive={false}
             connectNulls={false}
           />
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   )
@@ -65,11 +83,14 @@ function StatusBadge({ status }: { status: DeviceStatus }) {
 export default function MetricsView() {
   const { devices, loading: devicesLoading, error: devicesError } = useDevices()
   const { statuses } = useStatusStream()
+  const [range, setRange] = useState<HistoryRange>('live')
   const {
     historiesByDevice,
+    resolution,
     loading: historiesLoading,
     error: historiesError,
-  } = useAllDeviceHistories(devices)
+  } = useAllDeviceHistories(devices, range)
+  const bucketed = resolution !== 'raw'
 
   if (devicesLoading) {
     return (
@@ -137,7 +158,10 @@ export default function MetricsView() {
         <TabsContent value="latency">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">Per-device latency</CardTitle>
+              <div className="flex items-center gap-3">
+                <CardTitle className="text-base">Per-device latency</CardTitle>
+                <TimeRangeSelect value={range} onChange={setRange} />
+              </div>
               <div className="flex gap-8 text-xs text-muted-foreground">
                 <span>Median</span>
                 <span>Reachability</span>
@@ -154,7 +178,9 @@ export default function MetricsView() {
                 </p>
               ) : !hasAnyHistory ? (
                 <p className="py-4 text-sm text-muted-foreground">
-                  No history yet — waiting for the next poll cycle.
+                  {range === 'live'
+                    ? 'No history yet — waiting for the next poll cycle.'
+                    : 'No data in this time range yet.'}
                 </p>
               ) : (
                 latencyRows.map(({ device, history, median, reachability }) => (
@@ -170,7 +196,7 @@ export default function MetricsView() {
                       {device.name}
                     </Link>
                     <div className="flex items-center gap-6">
-                      <Sparkline history={history} />
+                      <Sparkline history={history} bucketed={bucketed} />
                       <span
                         data-testid="median"
                         className="w-20 text-right text-sm tabular-nums"
@@ -189,6 +215,14 @@ export default function MetricsView() {
               )}
             </CardContent>
           </Card>
+          {hasAnyHistory && (
+            <p
+              data-testid="history-resolution"
+              className="mt-2 text-xs text-muted-foreground"
+            >
+              Resolution: {describeResolution(resolution)}
+            </p>
+          )}
         </TabsContent>
 
         <TabsContent value="status">
