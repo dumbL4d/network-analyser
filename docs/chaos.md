@@ -151,6 +151,10 @@ less than three polls never becomes "down" at all.
 
 All endpoints are admin only and answer with the faults in place afterwards:
 `{faults: [{device_id, kind, detail}], scenarios, controllable_device_ids}`.
+Every action that went through is written to the application log and to the
+audit log (`chaos.fail`, `chaos.degrade`, `chaos.flap`, `chaos.scenario`,
+`chaos.restore_all`: see [security.md](security.md#the-audit-log)), with the
+admin who did it.
 
 | Method | Path                         | Body                                              | What it does                                                   |
 | ------ | ---------------------------- | ------------------------------------------------- | -------------------------------------------------------------- |

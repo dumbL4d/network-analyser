@@ -9,13 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
-from app.core.deps import get_current_user, get_current_user_from_query_token
+from app.core.deps import get_current_user, get_stream_user
 from app.db.seed import seed_devices_from_json
 from app.db.seed_settings import seed_default_settings
 from app.db.seed_users import seed_default_users
 from app.db.session import init_db
 from app.models.user import User
 from app.routers.analysis import router as analysis_router
+from app.routers.audit import router as audit_router
 from app.routers.auth import router as auth_router
 from app.routers.chaos import router as chaos_router
 from app.routers.devices import router as devices_router
@@ -27,12 +28,14 @@ from app.routers.playbooks import router as playbooks_router
 from app.routers.settings import router as settings_router
 from app.routers.stats import router as stats_router
 from app.routers.users import router as users_router
+from app.schemas.auth import StreamTicketOut
 from app.services.chaos import report_leftover_faults
 from app.services.persistence import warm_caches
 from app.services.ping_engine import DeviceStatus
 from app.services.poll_loop import run_poll_loop
 from app.services.retention import run_retention_loop
 from app.services.status_store import status_store
+from app.services.stream_tickets import stream_tickets
 
 logging.basicConfig(level=logging.INFO)
 
@@ -113,15 +116,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 
+# Strict CORS: only the origins listed in CORS_ORIGINS (exact origins, never a
+# wildcard: see config.py), only the methods and headers the frontend uses,
+# and no credentials. The API is authenticated by the Authorization header,
+# never by a cookie, so a browser has nothing to attach on another site's
+# behalf.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(analysis_router)
+app.include_router(audit_router)
 app.include_router(auth_router)
 app.include_router(chaos_router)
 app.include_router(devices_router)
@@ -146,17 +154,27 @@ def get_status(current_user: User = Depends(get_current_user)):
     return serialize_snapshot(status_store.get_all())
 
 
+@app.post("/api/stream/ticket", response_model=StreamTicketOut)
+def create_stream_ticket(current_user: User = Depends(get_current_user)) -> StreamTicketOut:
+    """A single-use ticket that opens the status stream once, within 30 s."""
+    return StreamTicketOut(
+        ticket=stream_tickets.issue(current_user.username),
+        expires_in=int(stream_tickets.ttl_seconds),
+    )
+
+
 @app.get("/api/stream/status")
 async def stream_status(
-    current_user: User = Depends(get_current_user_from_query_token),
+    current_user: User = Depends(get_stream_user),
 ):
     """Server-Sent Events stream of full status snapshots.
 
-    Auth note: this endpoint is the ONLY one that authenticates via a ``token``
-    query parameter instead of the ``Authorization`` header, because the
-    browser ``EventSource`` API cannot set custom request headers. Clients must
-    connect as ``/api/stream/status?token=<jwt>``. See
-    ``app.core.deps.get_current_user_from_query_token``.
+    Auth note: this endpoint is the ONLY one that does not read the
+    ``Authorization`` header, because the browser ``EventSource`` API cannot
+    set custom request headers. Clients first get a ticket from
+    POST /api/stream/ticket, then connect as
+    ``/api/stream/status?ticket=<ticket>``. A ticket works once, so every
+    (re)connection needs a new one. See ``app.core.deps.get_stream_user``.
 
     Each client gets its own queue. The generator is cancelled by
     ``EventSourceResponse`` when the client disconnects, which triggers the

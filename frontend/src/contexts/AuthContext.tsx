@@ -7,15 +7,35 @@ import {
   type ReactNode,
 } from 'react'
 
-import { API_BASE_URL, TOKEN_STORAGE_KEY, getStoredToken } from '@/lib/api'
+import {
+  API_BASE_URL,
+  PASSWORD_CHANGE_REQUIRED_EVENT,
+  SESSION_EXPIRED_EVENT,
+  TOKEN_STORAGE_KEY,
+  getStoredToken,
+} from '@/lib/api'
 
 interface AuthContextValue {
   token: string | null
   username: string | null
   role: string | null
+  /**
+   * True while the account still has a seeded password. Until it is changed
+   * the backend answers 403 to everything else, so the only page to show is
+   * the account page.
+   */
+  mustChangePassword: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => void
+  /** Call after a successful password change: the account is unlocked. */
+  passwordChanged: () => void
   isAuthenticated: boolean
+}
+
+interface Me {
+  username: string
+  role: string
+  must_change_password: boolean
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -23,7 +43,7 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 async function loginRequest(
   username: string,
   password: string,
-): Promise<{ access_token: string; role: string; username: string }> {
+): Promise<Me & { access_token: string }> {
   const body = new URLSearchParams({ username, password })
   const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
     method: 'POST',
@@ -31,23 +51,37 @@ async function loginRequest(
     body,
   })
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error('Incorrect username or password')
+    }
+    // 429: too many wrong passwords. The backend says how long to wait.
+    const detail: unknown = await response
+      .json()
+      .then((error: { detail?: unknown }) => error.detail)
+      .catch(() => null)
     throw new Error(
-      response.status === 401
-        ? 'Incorrect username or password'
+      typeof detail === 'string'
+        ? detail
         : `Login failed (HTTP ${response.status})`,
     )
   }
-  return (await response.json()) as {
-    access_token: string
-    role: string
-    username: string
-  }
+  return (await response.json()) as Me & { access_token: string }
+}
+
+/** Who the stored token belongs to. Rejects when it is no longer valid. */
+async function fetchMe(): Promise<Me> {
+  const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
+    headers: { Authorization: `Bearer ${getStoredToken()}` },
+  })
+  if (!response.ok) throw new Error('Session invalid')
+  return (await response.json()) as Me
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null)
   const [username, setUsername] = useState<string | null>(null)
   const [role, setRole] = useState<string | null>(null)
+  const [mustChangePassword, setMustChangePassword] = useState(false)
   // While true, the stored-token validation of the previous mount has not
   // finished; keeping the tree unmounted avoids a flash of the login page for
   // users whose session is actually still valid.
@@ -59,19 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
 
-    async function validate(): Promise<{
-      username: string
-      role: string
-    } | null> {
-      const stored = getStoredToken()
-      if (stored === null) return null
-
-      const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${stored}` },
-      })
-      if (!response.ok) throw new Error('Session invalid')
-      return (await response.json()) as { username: string; role: string }
-    }
+    const validate = (): Promise<Me | null> =>
+      getStoredToken() === null ? Promise.resolve(null) : fetchMe()
 
     validate()
       .then((me) => {
@@ -79,6 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setToken(getStoredToken())
         setUsername(me.username)
         setRole(me.role)
+        setMustChangePassword(me.must_change_password)
       })
       .catch(() => {
         if (cancelled) return
@@ -99,6 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(data.access_token)
     setUsername(data.username)
     setRole(data.role)
+    setMustChangePassword(data.must_change_password)
   }, [])
 
   const logout = useCallback(() => {
@@ -106,7 +131,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null)
     setUsername(null)
     setRole(null)
+    setMustChangePassword(false)
   }, [])
+
+  const passwordChanged = useCallback(() => setMustChangePassword(false), [])
+
+  // What the backend says about the session as a whole (see lib/api.ts).
+  useEffect(() => {
+    // The token expired or the account is gone: back to the login page.
+    const onExpired = () => logout()
+    // Ask instead of assuming: the 403 may be the late answer to a request
+    // that was sent just before the password was changed.
+    const onPasswordChangeRequired = () => {
+      if (mustChangePassword) return
+      fetchMe()
+        .then((me) => setMustChangePassword(me.must_change_password))
+        .catch(() => {})
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired)
+    window.addEventListener(
+      PASSWORD_CHANGE_REQUIRED_EVENT,
+      onPasswordChangeRequired,
+    )
+    return () => {
+      window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired)
+      window.removeEventListener(
+        PASSWORD_CHANGE_REQUIRED_EVENT,
+        onPasswordChangeRequired,
+      )
+    }
+  }, [logout, mustChangePassword])
 
   if (!isReady) {
     return null
@@ -118,8 +172,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         token,
         username,
         role,
+        mustChangePassword,
         login,
         logout,
+        passwordChanged,
         isAuthenticated: token !== null,
       }}
     >

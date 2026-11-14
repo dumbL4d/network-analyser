@@ -47,6 +47,11 @@ entire warehouse LAN so the whole system runs on one machine.
 - **Role-based access** — JWT login with `admin` / `viewer` roles; device CRUD,
   user management, monitoring settings, and users' password changes all live
   behind the appropriate role check.
+- **Hardened by default** — no built-in passwords (the first ones come from
+  the environment or are generated, and must be changed at the first login),
+  throttled logins, short-lived tokens, single-use tickets for the status
+  stream, strict CORS, security headers, and an **audit log** of who did
+  what. See [Security](#security) and [docs/security.md](docs/security.md).
 - **Simulated hardware** — Docker Compose brings up 12 Alpine containers that
   stand in for firewall/switch/PLC/HMI/AP/scanner hardware, so the entire
   lifecycle (dev, demo, testing) works without touching real devices.
@@ -75,6 +80,8 @@ flowchart LR
         IA["IncidentAnalysis<br/>(root cause vs collateral)"]
         TG["TopologyGraph<br/>(pure graph algorithms)"]
         CH["Chaos controller<br/>(plans faults, admin only)"]
+        AUTH["Auth<br/>(JWT, login throttle, stream tickets)"]
+        AUD["Audit log<br/>(who did what, from where)"]
         TRK["IncidentTracker<br/>(open / update / resolve)"]
         RET["Retention job<br/>(hourly rollup + cleanup)"]
         DB[("SQLite<br/>backend-data volume")]
@@ -94,6 +101,11 @@ flowchart LR
     API --> IA
     API -- "SPOF + what-if" --> TG
     API --> CH
+    API -- "every request" --> AUTH
+    SSE -- "single-use ticket" --> AUTH
+    AUTH -- "account still exists?" --> DB
+    API -- "logins and admin actions" --> AUD
+    AUD --> DB
     CH -- "what a failure cuts off" --> TG
     CH -. "control-net + shared secret" .-> AGENT
     AGENT -. "stop / start / tc netem" .-> SIM
@@ -130,18 +142,20 @@ user's browser straight to the backend.
 ├── backend/                 FastAPI application (Python 3.12)
 │   ├── app/
 │   │   ├── main.py          App factory, lifespan (migrate, seed, warm-up, background tasks), SSE endpoint
-│   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth deps
+│   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth and audit deps
 │   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
-│   │   ├── models/          Device, DeviceLink, User, AppSettings, the history tables and incidents (SQLModel)
+│   │   ├── models/          Device, DeviceLink, User, AppSettings, AuditEvent, the history tables and
+│   │   │                    incidents (SQLModel)
 │   │   ├── routers/         auth, devices, links, settings, users, history, flaps, incidents, stats,
-│   │   │                    analysis (SPOF, what-if), chaos (fault injection), playbooks
+│   │   │                    analysis (SPOF, what-if), chaos (fault injection), audit, playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
 │   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis,
 │   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention,
 │   │   │                    incident_tracker (incident lifecycle), incident_stats (MTTR, availability),
 │   │   │                    topology_graph (graph algorithms), device_links (rules for extra links),
 │   │   │                    topology_analysis (SPOF report, what-if),
-│   │   │                    chaos (fault planning and control), chaos_client (talks to the agent)
+│   │   │                    chaos (fault planning and control), chaos_client (talks to the agent),
+│   │   │                    rate_limit (login throttling), stream_tickets (SSE tickets), audit (audit log)
 │   │   └── data/playbooks.py  Static guided-fix playbook content
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
@@ -154,6 +168,7 @@ user's browser straight to the backend.
 │   │   │                    useIncidentRecords, useAvailability, useTopology (links, SPOFs),
 │   │   │                    usePolled (shared polling)
 │   │   └── lib/             api client (fetch + SSE), topology layout, metrics helpers
+│   ├── nginx.conf           SPA fallback and the security headers (CSP and friends)
 │   └── Dockerfile           Multi-stage: node build → nginx static server
 ├── infra/
 │   ├── docker-compose.yml   Full stack: 12 sim devices + backend + frontend (+ chaos agent, profile "chaos")
@@ -161,7 +176,9 @@ user's browser straight to the backend.
 │   ├── sim/                 Image of a simulated device (Alpine + iproute2)
 │   ├── chaos-agent/         Fault injection executor: the only service on the Docker socket
 │   └── README.md            Deployment runbook
-└── docs/chaos.md            Fault injection: architecture, risks, scenarios
+└── docs/
+    ├── chaos.md             Fault injection: architecture, risks, scenarios
+    └── security.md          Threat model, what is mitigated, known limitations
 ```
 
 ## Backend (FastAPI)
@@ -429,7 +446,8 @@ hour ago is not credited with a full day of uptime.
 | `GET`    | `/api/auth/me`                    | user        | Current session identity                       |
 | `PATCH`  | `/api/auth/change-password`       | user        | Self-service password change                   |
 | `GET`    | `/api/status`                     | user        | Latest status snapshot (non-streaming)         |
-| `GET`    | `/api/stream/status?token=`       | user (query)| SSE stream of full status snapshots            |
+| `POST`   | `/api/stream/ticket`              | user        | Single-use ticket (30 s) for the stream       |
+| `GET`    | `/api/stream/status?ticket=`      | ticket      | SSE stream of full status snapshots           |
 | `GET`    | `/api/devices`                    | user        | List devices                                   |
 | `GET`    | `/api/devices/{id}`               | user        | Get one device                                 |
 | `POST`   | `/api/devices`                    | **admin**   | Create device (parent/cycle validation)        |
@@ -461,10 +479,28 @@ hour ago is not credited with a full day of uptime.
 | `GET`    | `/api/users`                      | **admin**   | List users                                     |
 | `POST`   | `/api/users`                      | **admin**   | Create user                                    |
 | `DELETE` | `/api/users/{id}`                 | **admin**   | Delete user (self/last-admin guarded)          |
+| `GET`    | `/api/audit`                      | **admin**   | Audit log, newest first (see below)           |
 
-> **SSE auth note:** the stream endpoint authenticates via a `token` query
-> parameter because the browser `EventSource` API cannot set an
-> `Authorization` header; every other endpoint uses `Bearer` tokens.
+> **SSE auth note:** the browser `EventSource` API cannot set an
+> `Authorization` header, and a login token does not belong in a URL. So the
+> stream is opened with a ticket: `POST /api/stream/ticket` (a normal `Bearer`
+> request) answers `{"ticket": "...", "expires_in": 30}`. A ticket works once
+> and for 30 seconds, so every reconnect needs a new one. Every other
+> endpoint uses `Bearer` tokens.
+
+`POST /api/auth/login` and `GET /api/auth/me` also return
+`must_change_password`. While it is true, every endpoint except those two and
+`PATCH /api/auth/change-password` answers 403 with
+`{"detail": {"code": "password_change_required", "message": "..."}}`. After 5
+wrong passwords in 5 minutes for one username from one address (or 20 from
+one address) the login answers 429 with a `Retry-After` header. See
+[Security](#security).
+
+`GET /api/audit` takes `actor` (a username), `action` (for example
+`auth.login_failed`), `limit` (1–200, default 50) and `offset`, and returns
+`{total, limit, offset, items}`, an item being
+`{id, ts, actor, action, target, ip, details}`. The actions are listed in
+[docs/security.md](docs/security.md#the-audit-log).
 
 `GET /api/incidents/history` takes `state` (`open`, `acknowledged` or
 `resolved`; may be repeated), `device_id` (the root-cause device), `limit`
@@ -583,12 +619,49 @@ Two endpoints expose the engine:
   incident analysis. The total blast radius is the number of devices cut
   off.
 
+## Security
+
+The threat model, the details and the known limitations are in
+[docs/security.md](docs/security.md). In short:
+
+- **First login.** A new database gets two accounts, `admin` and `viewer`.
+  Their first passwords come from `ADMIN_INITIAL_PASSWORD` and
+  `VIEWER_INITIAL_PASSWORD`; one that is not set is generated and written to
+  the backend log, once. Either way the account must change it at its first
+  login. Until then the API answers 403 (`password_change_required`) to
+  everything else, and the UI shows only the account page.
+- **Tokens.** A login lasts 60 minutes (`JWT_EXPIRE_MINUTES`). Every request
+  checks that the account still exists and is not newer than the token, and
+  takes the role from the database, not from the token.
+- **Login throttling.** After 5 wrong passwords in 5 minutes for one username
+  from one address, or 20 from one address, the login answers 429 with
+  `Retry-After`. It is a hand-written sliding-window limiter on deques
+  (`backend/app/services/rate_limit.py`).
+- **Status stream.** Opened with a single-use ticket that lasts 30 seconds,
+  not with the login token in the URL.
+- **CORS and headers.** The API accepts cross-origin calls only from the exact
+  origins listed in `CORS_ORIGINS`. nginx serves the frontend with a
+  Content-Security-Policy, `X-Content-Type-Options`, `X-Frame-Options` and
+  `Referrer-Policy`.
+- **Audit log.** Logins (failed ones too), changes to users, devices, links
+  and settings, incident acknowledgements and notes, and fault injection are
+  recorded with who, when and from which address. Admins read it in the Audit
+  tab of the Admin panel or with `GET /api/audit`.
+
+> **`DEMO_MODE=true` is insecure and for demos only.** It creates the two
+> accounts with the passwords `admin` / `admin123` and `viewer` / `viewer123`
+> and switches the forced password change off. It is **off by default**. It
+> only chooses the passwords of a new database and never overwrites existing
+> ones: to switch a database to the demo credentials, recreate it.
+
 ## Frontend (React)
 
 A single-page React app (React 19, TypeScript, Vite) styled with Tailwind CSS
 and shadcn/ui components. Routing (`React Router`) and the JWT auth state live
 in `AuthContext`; `ProtectedRoute` guards every view and `AdminRoute` restricts
-the admin panel to `admin` users.
+the admin panel to `admin` users. An account that still has to change its
+password is sent to the account page from every other route, and a session
+the backend no longer accepts (a 401) is logged out.
 
 ```mermaid
 flowchart LR
@@ -604,24 +677,27 @@ flowchart LR
         S["/stability — StabilityView<br/>(flap-count bar ranking + availability table)"]
         I["/incidents — IncidentView<br/>(summary cards, Active and History tabs, playbook stepper)"]
         IDV["/incidents/:id — IncidentDetailView<br/>(event timeline, plus acknowledge and notes for admins)"]
-        A["/admin — AdminPanel<br/>(Devices / Links / Settings / Users / Chaos tabs)"]
-        C["/account — AccountPage<br/>(change password)"]
+        A["/admin — AdminPanel<br/>(Devices / Links / Settings / Users / Chaos / Audit tabs)"]
+        C["/account — AccountPage<br/>(change password, forced at the first login)"]
     end
 
-    T -. SSE .-> STREAM["/api/stream/status (EventSource + token)"]
+    T -. SSE .-> STREAM["/api/stream/status (EventSource + single-use ticket)"]
     T -. "/api/links + /api/analysis/spof + what-if" .-> REST
     M -. SSE + /api/history .-> STREAM
     D -. /api/history .-> REST["Other /api /* REST calls"]
     S -. "/api/flaps + /api/settings + /api/stats/availability" .-> REST
     I -. "/api/incidents + /history (poll 10 s) + /api/stats/incidents" .-> REST
     IDV -. "/api/incidents/:id (poll 10 s)" .-> REST
-    A -. "/api/devices /links /settings /users /chaos" .-> REST
+    A -. "/api/devices /links /settings /users /chaos /audit" .-> REST
 ```
 
 The live status path is **push** (SSE), while everything else is **pull**
 (REST polling): live and stored incidents re-poll every 10 s, incident
 statistics every 30 s, availability every minute, flap counts/settings on
-mount, and history per device view.
+mount, and history per device view. Every stream connection is opened with
+a new ticket. When one drops, it is closed and replaced by a new connection
+with a new ticket, after 1 s, 2 s, 4 s and so on up to 30 s while it keeps
+failing (the browser's own reconnect would reuse the spent ticket).
 
 The Topology page draws parent links in grey and extra links as blue dashed
 lines, and marks every single point of failure with a `SPOF n` badge, n being
@@ -632,7 +708,8 @@ returns to the live view. The Admin panel has a Links tab to list, add and
 delete extra links; a rejected link shows the backend's reason. Its Chaos tab
 injects faults into the simulated network: preset scenarios, failing or
 slowing down one device, the list of faults in place, and Restore all (see
-[docs/chaos.md](docs/chaos.md)).
+[docs/chaos.md](docs/chaos.md)). Its Audit tab shows the audit log, newest
+first, with a filter for the user and one for the action.
 
 The Incidents page has four summary cards (incidents recorded, mean detection
 delay, MTTR, alerts suppressed) above two tabs. **Active** is the live
@@ -738,16 +815,18 @@ flowchart LR
 - **`backend`** — FastAPI + SQLite; needs `CAP_NET_RAW` for raw ICMP sockets,
   publishes `:8000`, persists the DB in the `backend-data` named volume, and
   mounts `infra/devices.seed.json` read-only as the topology source.
-- **`frontend`** — nginx serving the built SPA on `:8080`. It is deliberately
-  not on `warehouse-net`: it never talks to the backend itself (the browser
-  does), so attaching it adds nothing.
+- **`frontend`** — nginx serving the built SPA on `:8080`, with the security
+  headers (see [Security](#security)). It is deliberately not on
+  `warehouse-net`: it never talks to the backend itself (the browser does),
+  so attaching it adds nothing.
 - **14 containers total** when running (12 sims + backend + frontend).
 - **`chaos-agent`** (optional, a fifteenth) — fault injection for demos. It
   only starts with `--profile chaos`, publishes no port, and is the only
   service on the Docker socket. See [docs/chaos.md](docs/chaos.md).
 
-Persisted SQLite data (settings, users, devices, latency history and status
-transitions) survives `down`/`up` and rebuilds via the `backend-data` volume,
+Persisted SQLite data (settings, users, devices, latency history, status
+transitions and the audit log) survives `down`/`up` and rebuilds via the
+`backend-data` volume,
 and the backend upgrades its schema in place at startup (see
 [Database migrations](#database-migrations)). Latency history, flap counts and
 debounce state are held in memory for speed, but they are rebuilt from the
@@ -759,8 +838,8 @@ live status snapshot starts empty, until the first poll completes.
 
 The full deployment (simulated devices + backend + frontend) runs from
 `infra/`: see **`infra/README.md`** for setup (it requires a generated
-`JWT_SECRET_KEY` in `infra/.env`), the startup/stop commands, and the seeded
-login credentials.
+`JWT_SECRET_KEY` in `infra/.env`), the startup/stop commands, and how the
+first login works.
 
 ## Development Setup
 
@@ -777,8 +856,14 @@ uvicorn app.main:app --reload --port 8000
 Requires `CAP_NET_RAW` (or root) for privileged raw-ICMP pings. For
 rootless local development, set `PING_PRIVILEGED=False` in `.env` to use
 icmplib's unprivileged datagram mode (see `backend/app/services/ping_engine.py`
-for platform caveats). Seeded logins default to `admin` / `admin123` and
-`viewer` / `viewer123`.
+for platform caveats).
+
+The first start creates the accounts `admin` and `viewer` and prints a
+generated password for each in the log (or set `ADMIN_INITIAL_PASSWORD` and
+`VIEWER_INITIAL_PASSWORD` in `.env`); each must be changed at the first login.
+For a throwaway local setup, `DEMO_MODE=True` in `.env` gives `admin` /
+`admin123` and `viewer` / `viewer123` without that step. It is insecure: see
+[Security](#security).
 
 ### Frontend
 
@@ -825,6 +910,10 @@ flap counts survive a backend restart.
 - **`device_link`**: one row per extra link between two devices (see
   "Redundant links"). Columns: `device_a_id`, `device_b_id`, with
   `device_a_id < device_b_id`.
+- **`audit_event`**: the audit log, one row per event (see
+  [Security](#security)). Columns: `ts`, `actor`, `action`, `target`, `ip`,
+  `details` (JSON). Rows are only ever added, and are kept until the database
+  is deleted.
 
 `latency_sample` and `status_transition` are indexed on `(device_id, ts)`, and
 `latency_rollup_1m` is unique on `(device_id, bucket_start)`. `incident` has a
@@ -953,6 +1042,8 @@ its data.
   `status_transition`.
 - `0004` adds the incident tables: `incident` and `incident_event`.
 - `0005` adds `device_link`, the extra links between devices.
+- `0006` adds `audit_event` (the audit log) and two columns to `user`:
+  `must_change_password` and `created_at`. Existing accounts keep working.
 
 Every change to a model in `backend/app/models/` needs a migration:
 
@@ -961,7 +1052,7 @@ cd backend
 source .venv/bin/activate
 alembic upgrade head      # bring your local database up to date first
 # ...edit the model...
-alembic revision --autogenerate --rev-id 0006 -m "describe the change"
+alembic revision --autogenerate --rev-id 0007 -m "describe the change"
 # review the new file in app/db/migrations/versions/, then:
 alembic upgrade head      # or simply start the backend
 pytest                    # test_migrations.py fails if a model has no migration
@@ -991,7 +1082,9 @@ network, no root and no Docker:
 - they use a temporary SQLite file, never the dev database
   (`tests/conftest.py` refuses to start otherwise);
 - the background poll loop is off (`POLL_ENABLED=false`), and the loop itself
-  is tested with a fake ping function, so no ICMP is sent.
+  is tested with a fake ping function, so no ICMP is sent;
+- nothing waits for real time: the login limiter and the stream tickets take
+  their clock as a parameter, and the tests move it by hand.
 
 ```sh
 cd backend
@@ -1006,7 +1099,11 @@ coverage html                                       # optional: browsable report
 These are characterization tests: they pin what the code does today, so a
 later change in behaviour shows up as a failing test. A test marked `xfail`
 records a known bug that has deliberately not been fixed yet; pytest lists each
-one with its reason at the end of the run.
+one with its reason at the end of the run. There are none at the moment.
+
+The suite runs with `DEMO_MODE=true`, so that it can log in as `admin` /
+`admin123`; `test_security.py` switches it off to test the forced password
+change and how the default accounts are seeded.
 
 The suite is seeded with a frozen copy of the original 11-device tree
 (`backend/tests/data/classic_tree.seed.json`), so tests of the monitoring

@@ -34,6 +34,11 @@ together on one bridge network (`warehouse-net`).
      (e.g. `http://10.0.0.50:8000`). This is baked into the frontend at image
      build time, so changing it afterwards requires `up -d --build`.
 
+4. Optional: choose the first passwords of the two default accounts by
+   setting `ADMIN_INITIAL_PASSWORD` and `VIEWER_INITIAL_PASSWORD` in
+   `infra/.env`. If you leave them empty, the backend generates them (see
+   "First login" below).
+
    `infra/.env` is git-ignored; never commit it.
 
 ## Start
@@ -51,17 +56,49 @@ frontend (nginx static SPA on port 8080).
 - Frontend UI: <http://localhost:8080> (or the deployment's actual address)
 - Backend API: <http://localhost:8000>/api/... (`/api/health` for a smoke check)
 
-Default seeded logins:
+### First login
 
-| User   | Password   | Role  |
-| ------ | ---------- | ----- |
-| `admin` | `admin123` | admin |
+The first start creates two accounts, `admin` (role admin) and `viewer` (role
+viewer). Their first passwords are the ones you set in `infra/.env`. If you
+set none, the backend generated them and wrote them to its log, once:
+
+```sh
+docker compose -f infra/docker-compose.yml logs backend | grep "initial password"
+```
+
+Sign in with that password and the app takes you to the account page: each of
+the two accounts must choose a new password before it can do anything else.
+After that the log line is of no use to anyone. Further accounts are created
+in Admin → Users.
+
+A login lasts 60 minutes (`JWT_EXPIRE_MINUTES`). After 5 wrong passwords in 5
+minutes the login is refused for a while. Everything an admin changes, and
+every login, is in Admin → Audit. See `../docs/security.md`.
+
+### Demo mode (insecure)
+
+> **Only for demos. Never on a network that matters.**
+
+`DEMO_MODE=true` in `infra/.env` creates the two accounts with fixed, publicly
+known passwords and without the forced change:
+
+| User     | Password    | Role   |
+| -------- | ----------- | ------ |
+| `admin`  | `admin123`  | admin  |
 | `viewer` | `viewer123` | viewer |
 
-> **Change the passwords immediately after first login.** The admin can change
-> their own password on the Account page and manage every user's account via
-> Admin → Users — this is exactly what the password-change and user-management
-> features are for. Do not leave `admin123` in front of real network devices.
+It is off by default. It only chooses the passwords when the database is
+created and never overwrites existing ones. To switch an existing
+installation to the demo credentials, recreate its database:
+
+```sh
+docker compose -f infra/docker-compose.yml down -v   # deletes ALL stored data
+DEMO_MODE=true docker compose -f infra/docker-compose.yml up -d
+```
+
+A database from an older version of this project still has those passwords.
+Started without `DEMO_MODE`, the backend makes such an account change its
+password at the next login.
 
 ## Stop
 
@@ -144,5 +181,6 @@ the `NET_ADMIN` capability. None of that is used unless the profile is running.
 
 - `docker-compose.yml` — full service wiring (networks, volumes, env pass-through).
 - `../docs/chaos.md` — fault injection: architecture, risks, scenarios.
+- `../docs/security.md` — threat model, what is mitigated, known limitations.
 - `../backend/Dockerfile` and `../frontend/Dockerfile` — the production images.
 - `../README.md` — overall project overview and development setup.

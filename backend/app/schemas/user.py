@@ -4,13 +4,17 @@
 the API, not even for admins (no operation ever needs them returned).
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 # Shared by the admin user-creation endpoint and the self-service password
 # change. Both enforce the same minimum.
 MIN_PASSWORD_LENGTH = 8
+
+# What bcrypt can hash: no NUL byte, and not thousands of characters. Anything
+# else is rejected here (422) instead of failing inside the hash function.
+NewPassword = Annotated[str, StringConstraints(max_length=1024, pattern=r"^[^\x00]*$")]
 
 
 class UserOut(BaseModel):
@@ -23,7 +27,7 @@ class UserOut(BaseModel):
 
 class UserCreate(BaseModel):
     username: str
-    password: str  # plaintext; hashed server-side before persisting
+    password: NewPassword  # plaintext; hashed server-side before persisting
     role: Literal["admin", "viewer"]
 
 
@@ -37,4 +41,4 @@ class PasswordChangeRequest(BaseModel):
     """
 
     current_password: str
-    new_password: str
+    new_password: NewPassword

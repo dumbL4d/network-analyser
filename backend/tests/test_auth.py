@@ -12,7 +12,6 @@ from app.main import app
 
 # The only API routes that are meant to work without a token.
 PUBLIC_ROUTES = {("GET", "/api/health"), ("POST", "/api/auth/login")}
-SSE_ROUTE = ("GET", "/api/stream/status")
 
 
 def _protected_routes() -> list:
@@ -30,25 +29,15 @@ def _protected_routes() -> list:
             key = (method, route.path)
             if key in PUBLIC_ROUTES:
                 continue
-            marks = []
-            if key == SSE_ROUTE:
-                marks.append(
-                    pytest.mark.xfail(
-                        strict=True,
-                        reason=(
-                            "BUG: the SSE stream answers 422 (missing 'token' query "
-                            "parameter) instead of 401 when no token is supplied"
-                        ),
-                    )
-                )
-            params.append(pytest.param(method, route.path, id=f"{method} {route.path}", marks=marks))
+            params.append(pytest.param(method, route.path, id=f"{method} {route.path}"))
     return params
 
 
 def _token(sub: str | None = "admin", minutes: int = 5, secret: str | None = None, **claims) -> str:
-    payload = {"exp": datetime.now(timezone.utc) + timedelta(minutes=minutes), **claims}
-    if sub is not None:
-        payload["sub"] = sub
+    """A signed token. A claim given as None is left out of it."""
+    now = datetime.now(timezone.utc)
+    payload = {"sub": sub, "iat": now, "exp": now + timedelta(minutes=minutes), **claims}
+    payload = {claim: value for claim, value in payload.items() if value is not None}
     return jwt.encode(payload, secret or settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -84,8 +73,9 @@ def test_public_routes_work_without_a_token(client):
         lambda: _token(minutes=-1),
         lambda: _token(sub="no-such-user"),
         lambda: _token(sub=None),
+        lambda: _token(iat=None),
     ],
-    ids=["garbage", "wrong-signature", "expired", "unknown-user", "no-subject"],
+    ids=["garbage", "wrong-signature", "expired", "unknown-user", "no-subject", "no-issued-at"],
 )
 def test_invalid_token_returns_401(client, make_token):
     response = client.get("/api/devices", headers=_bearer(make_token()))
@@ -94,19 +84,13 @@ def test_invalid_token_returns_401(client, make_token):
     assert response.json() == {"detail": "Could not validate credentials"}
 
 
-def test_stream_rejects_an_invalid_query_token(client):
-    response = client.get("/api/stream/status", params={"token": "not-a-jwt"})
-
-    assert response.status_code == 401
-
-
 def test_any_correctly_signed_token_is_accepted_without_a_login(client):
     # Tokens are stateless: the server keeps no session, it only checks the
     # signature, the expiry and that the user still exists.
     response = client.get("/api/auth/me", headers=_bearer(_token(sub="viewer")))
 
     assert response.status_code == 200
-    assert response.json() == {"username": "viewer", "role": "viewer"}
+    assert response.json() == {"username": "viewer", "role": "viewer", "must_change_password": False}
 
 
 # --- login ---------------------------------------------------------------------
@@ -121,15 +105,18 @@ def test_login_with_the_seeded_accounts(client, username, password, role):
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"access_token", "token_type", "role", "username"}
+    assert set(body) == {"access_token", "token_type", "role", "username", "must_change_password"}
+    assert body["must_change_password"] is False  # DEMO_MODE is on in the suite
     assert (body["token_type"], body["role"], body["username"]) == ("bearer", role, username)
 
     claims = jwt.decode(
         body["access_token"], settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
     )
     assert (claims["sub"], claims["role"]) == (username, role)
-    lifetime = datetime.fromtimestamp(claims["exp"], timezone.utc) - datetime.now(timezone.utc)
-    assert timedelta(minutes=479) < lifetime <= timedelta(minutes=480)  # 8 hours
+    issued_at = datetime.fromtimestamp(claims["iat"], timezone.utc)
+    assert timedelta(0) <= datetime.now(timezone.utc) - issued_at < timedelta(seconds=5)
+    # JWT_EXPIRE_MINUTES is 480 in the suite (conftest.py); the default is 60.
+    assert claims["exp"] - claims["iat"] == 480 * 60
 
 
 @pytest.mark.parametrize(
@@ -155,8 +142,16 @@ def test_login_requires_a_username_and_password_form(client):
 
 
 def test_me_returns_the_callers_identity(client, admin_headers, viewer_headers):
-    assert client.get("/api/auth/me", headers=admin_headers).json() == {"username": "admin", "role": "admin"}
-    assert client.get("/api/auth/me", headers=viewer_headers).json() == {"username": "viewer", "role": "viewer"}
+    assert client.get("/api/auth/me", headers=admin_headers).json() == {
+        "username": "admin",
+        "role": "admin",
+        "must_change_password": False,
+    }
+    assert client.get("/api/auth/me", headers=viewer_headers).json() == {
+        "username": "viewer",
+        "role": "viewer",
+        "must_change_password": False,
+    }
 
 
 # --- roles ---------------------------------------------------------------------
@@ -176,6 +171,7 @@ ADMIN_ONLY = [
     ("POST", "/api/incidents/1/notes", {"text": "checked the cabling"}),
     ("POST", "/api/links", {"device_a_id": "scanner-1", "device_b_id": "sw-server"}),
     ("DELETE", "/api/links/1", None),
+    ("GET", "/api/audit", None),
 ]
 
 

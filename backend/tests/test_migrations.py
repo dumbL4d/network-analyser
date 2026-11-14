@@ -136,14 +136,17 @@ def test_upgrading_an_existing_database_keeps_its_data(empty_database, create_ex
 
     assert _revision() == HEAD
     assert _rows("device") == devices
-    assert _rows("user") == users
+    # The users keep every value they had and gain the new columns: the upgrade
+    # itself does not make an existing account change its password.
+    upgraded_users = [{**user, "must_change_password": 0, "created_at": None} for user in users]
+    assert _rows("user") == upgraded_users
     # The settings row keeps every value it had and gains the new columns with
     # their defaults.
     assert _rows("appsettings") == [{**settings_row, "failure_threshold": 3, "recovery_threshold": 2}]
 
     init_db()  # a second start changes nothing
     assert _revision() == HEAD
-    assert (_rows("device"), _rows("user")) == (devices, users)
+    assert (_rows("device"), _rows("user")) == (devices, upgraded_users)
 
 
 def test_a_new_database_ends_up_with_exactly_the_schema_the_models_describe(empty_database):

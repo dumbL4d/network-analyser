@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from jose import jwt
 from passlib.context import CryptContext
+from passlib.exc import PasswordValueError
 
 from app.core.config import settings
 
@@ -20,17 +21,30 @@ def hash_password(plain: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """Return True if ``plain`` matches the stored bcrypt ``hashed`` value."""
-    return pwd_context.verify(plain, hashed)
+    """Return True if ``plain`` matches the stored bcrypt ``hashed`` value.
+
+    A password bcrypt cannot take (one with a NUL byte, or thousands of
+    characters long) is nobody's password: False, not an error.
+    """
+    try:
+        return pwd_context.verify(plain, hashed)
+    except PasswordValueError:
+        return False
 
 
 def create_access_token(subject: str, role: str) -> str:
-    """Build a signed HS256 JWT for ``subject`` (the username) with a ``role``
-    claim and an expiry derived from ``settings.JWT_EXPIRE_MINUTES``."""
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.JWT_EXPIRE_MINUTES
-    )
-    payload = {"sub": subject, "role": role, "exp": expire}
+    """Build a signed HS256 JWT for ``subject`` (the username).
+
+    Claims: ``sub``, ``role``, ``iat`` (when it was issued) and ``exp``
+    (``settings.JWT_EXPIRE_MINUTES`` later).
+    """
+    issued_at = datetime.now(timezone.utc)
+    payload = {
+        "sub": subject,
+        "role": role,
+        "iat": issued_at,
+        "exp": issued_at + timedelta(minutes=settings.JWT_EXPIRE_MINUTES),
+    }
     return jwt.encode(
         payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
     )

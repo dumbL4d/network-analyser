@@ -151,6 +151,16 @@ services:
       # CORS_ORIGINS field (verified concretely in Ticket 6.2). Allows the
       # Vite dev origin (:5173) and the containerized nginx origin (:8080).
       CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173","http://localhost:8080"]}'
+      # First start only: the passwords of the two default accounts. One that
+      # is left empty is generated and written to the backend log, once. Both
+      # accounts must change theirs at the first login (docs/security.md).
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
+      VIEWER_INITIAL_PASSWORD: ${VIEWER_INITIAL_PASSWORD:-}
+      # INSECURE, demos only: "true" seeds admin/admin123 and viewer/viewer123
+      # and switches the forced password change off. Off unless asked for.
+      DEMO_MODE: ${DEMO_MODE:-false}
+      # How long a login lasts, in minutes.
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
       # Data retention (see "Data persistence and retention" in ../README.md).
       # The defaults are the same as in backend/app/core/config.py; override
       # them in infra/.env.

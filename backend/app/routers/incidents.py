@@ -11,7 +11,7 @@ history, their timeline, and the operator actions on them.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
-from app.core.deps import get_current_user, require_role
+from app.core.deps import Audit, get_current_user, require_role
 from app.db.session import get_session
 from app.models.device import Device
 from app.models.device_link import DeviceLink
@@ -100,6 +100,7 @@ def acknowledge(
     incident_id: int,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> IncidentDetailOut:
     """Acknowledge an open incident (admin only)."""
     try:
@@ -108,7 +109,14 @@ def acknowledge(
         raise HTTPException(status_code=404, detail="Incident not found")
     except IncidentStateConflict as conflict:
         raise HTTPException(status_code=409, detail=str(conflict))
-    return _detail(session, incident_id)
+    detail = _detail(session, incident_id)
+    audit.record(
+        current_user.username,
+        "incident.acknowledged",
+        str(incident_id),
+        root_device_id=detail.root_device_id,
+    )
+    return detail
 
 
 @router.post("/{incident_id}/notes", response_model=IncidentDetailOut, status_code=201)
@@ -117,10 +125,19 @@ def add_note(
     payload: IncidentNoteCreate,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> IncidentDetailOut:
     """Add a note to an incident's timeline (admin only)."""
     try:
         add_incident_note(session, incident_id, current_user.username, payload.text)
     except IncidentNotFound:
         raise HTTPException(status_code=404, detail="Incident not found")
-    return _detail(session, incident_id)
+    detail = _detail(session, incident_id)
+    # The note itself is in the incident's timeline; here: who added one.
+    audit.record(
+        current_user.username,
+        "incident.note_added",
+        str(incident_id),
+        root_device_id=detail.root_device_id,
+    )
+    return detail

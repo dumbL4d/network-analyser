@@ -22,7 +22,7 @@ import pytest
 
 from app.core.config import settings
 from app.db.seed import seed_devices_from_json
-from app.models import Device, DeviceLink
+from app.models import AuditEvent, Device, DeviceLink
 from app.services.chaos import (
     SCENARIOS,
     _in_a_thread,
@@ -34,7 +34,7 @@ from app.services.chaos_client import ChaosAgentError, ChaosUnavailable, SimCont
 from app.services.device_links import canonical_pair
 from app.services.topology_analysis import what_if
 from tests.conftest import REAL_SEED_FILE
-from tests.helpers import seed_devices
+from tests.helpers import seed_devices, stored
 
 OT_CHILDREN = ["ap-aisle-1", "ap-aisle-2", "hmi-panel-1", "plc-conveyor-1", "scanner-1"]
 SERVERS = ["srv-prod-1", "srv-prod-2"]
@@ -823,6 +823,56 @@ def test_chaos_is_admin_only(shipped, agent, client, viewer_headers, method, pat
 @pytest.mark.parametrize(("method", "path", "body"), ENDPOINTS, ids=IDS)
 def test_chaos_needs_a_token(client, method, path, body):
     assert client.request(method, f"/api/chaos/{path}", json=body).status_code == 401
+
+
+def audited() -> list[tuple]:
+    """(actor, action, target, details) of the chaos events in the audit log."""
+    events = stored(AuditEvent.__table__, "actor", "action", "target", "details")
+    return [event for event in events if event[1].startswith("chaos.")]
+
+
+def test_every_action_is_written_to_the_audit_log(shipped, agent, client, admin_headers):
+    post(client, admin_headers, "fail", {"device_ids": ["sw-ot", "srv-prod-2"]})
+    post(client, admin_headers, "degrade", {"device_id": "fw-01", "delay_ms": 100, "jitter_ms": 10, "loss_pct": 1})
+    post(client, admin_headers, "flap", {"device_id": "srv-prod-1", "period_s": 20, "duration_s": 40})
+    post(client, admin_headers, "scenario/edge-switch-failure")
+    post(client, admin_headers, "restore-all")
+
+    assert audited() == [
+        ("admin", "chaos.fail", "sw-ot, srv-prod-2", {}),
+        ("admin", "chaos.degrade", "fw-01", {"delay_ms": 100, "jitter_ms": 10, "loss_pct": 1.0}),
+        ("admin", "chaos.flap", "srv-prod-1", {"period_s": 20.0, "duration_s": 40.0}),
+        ("admin", "chaos.scenario", "edge-switch-failure", {}),
+        ("admin", "chaos.restore_all", None, {}),
+    ]
+
+
+def test_looking_at_the_state_is_not_audited(shipped, agent, client, admin_headers):
+    assert client.get("/api/chaos/state", headers=admin_headers).status_code == 200
+
+    assert audited() == []
+
+
+def test_an_action_that_did_not_go_through_is_not_audited(shipped, agent, client, admin_headers, viewer_headers, monkeypatch):
+    assert post(client, viewer_headers, "fail", {"device_ids": ["sw-ot"]}).status_code == 403
+    assert post(client, admin_headers, "fail", {"device_ids": ["no-such-device"]}).status_code == 422
+    assert post(client, admin_headers, "scenario/no-such-scenario").status_code == 404
+    post(client, admin_headers, "fail", {"device_ids": ["scanner-1"]})
+    assert post(client, admin_headers, "flap", {"device_id": "scanner-1", "period_s": 10, "duration_s": 20}).status_code == 409
+
+    def refuse(name):
+        raise ChaosAgentError(502, "docker stop failed: permission denied")
+
+    monkeypatch.setattr(agent, "stop", refuse)
+    assert post(client, admin_headers, "fail", {"device_ids": ["sw-ot"]}).status_code == 502
+
+    assert audited() == [("admin", "chaos.fail", "scanner-1", {})]
+
+
+def test_an_action_is_not_audited_when_fault_injection_is_off(shipped, client, admin_headers):
+    assert post(client, admin_headers, "restore-all").status_code == 503
+
+    assert audited() == []
 
 
 def test_every_action_is_logged_with_who_did_it(shipped, agent, client, admin_headers, caplog):

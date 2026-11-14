@@ -8,7 +8,7 @@ is the FIRST use of ``require_role("admin")`` in the codebase.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
-from app.core.deps import get_current_user, require_role
+from app.core.deps import Audit, get_current_user, require_role
 from app.db.session import get_session
 from app.models.settings import AppSettings
 from app.models.user import User
@@ -49,6 +49,7 @@ def update_settings(
     payload: SettingsUpdate,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> SettingsOut:
     row = _get_singleton(session)
     # Only the fields the caller actually sent (PATCH semantics). Explicit
@@ -88,9 +89,16 @@ def update_settings(
                 detail=f"{field} must be between {MIN_THRESHOLD} and {MAX_THRESHOLD}",
             )
 
+    changes = {
+        field: {"from": getattr(row, field), "to": value}
+        for field, value in updates.items()
+        if getattr(row, field) != value
+    }
     for field, value in updates.items():
         setattr(row, field, value)
     session.add(row)
     session.commit()
     session.refresh(row)
-    return SettingsOut.model_validate(row)
+    updated = SettingsOut.model_validate(row)
+    audit.record(current_user.username, "settings.updated", changes=changes)
+    return updated

@@ -1,3 +1,4 @@
+import AdminAuditTab from '@/components/admin/AdminAuditTab'
 import AdminChaosTab from '@/components/admin/AdminChaosTab'
 import AdminDevicesTab from '@/components/admin/AdminDevicesTab'
 import AdminLinksTab from '@/components/admin/AdminLinksTab'
@@ -8,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 /**
  * Phase 4 Admin Panel: admin-only device CRUD, the extra links between
  * devices, live monitoring settings, and user management, plus the
- * password-change form (in the Users tab).
+ * password-change form (in the Users tab), fault injection and the audit log.
  */
 export default function AdminPanel() {
   return (
@@ -16,8 +17,8 @@ export default function AdminPanel() {
       <div className="mb-4">
         <h2 className="text-2xl font-semibold tracking-tight">Admin Panel</h2>
         <p className="text-sm text-muted-foreground">
-          Manage devices, links, monitoring settings, and users, and inject
-          faults into the simulated network.
+          Manage devices, links, monitoring settings, and users, inject
+          faults into the simulated network, and see who did what.
         </p>
       </div>
       <Tabs defaultValue="devices">
@@ -30,6 +31,9 @@ export default function AdminPanel() {
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="chaos" data-testid="chaos-tab">
             Chaos
+          </TabsTrigger>
+          <TabsTrigger value="audit" data-testid="audit-tab">
+            Audit
           </TabsTrigger>
         </TabsList>
         <TabsContent value="devices">
@@ -46,6 +50,9 @@ export default function AdminPanel() {
         </TabsContent>
         <TabsContent value="chaos">
           <AdminChaosTab />
+        </TabsContent>
+        <TabsContent value="audit">
+          <AdminAuditTab />
         </TabsContent>
       </Tabs>
     </div>

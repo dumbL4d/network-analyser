@@ -1,3 +1,4 @@
+import type { AuditPage } from '@/types/audit'
 import type { ChaosState } from '@/types/chaos'
 import type {
   DeviceCreate,
@@ -49,15 +50,25 @@ export class UnauthorizedError extends Error {
   }
 }
 
+// Two answers of the backend concern the whole session, not the one request
+// that got them. They are announced on `window`, and AuthContext listens:
+//  - 401: the session is over (the token expired, or the account is gone);
+//  - 403 with code "password_change_required": a seeded password has to be
+//    replaced before anything else is allowed.
+export const SESSION_EXPIRED_EVENT = 'na:session-expired'
+export const PASSWORD_CHANGE_REQUIRED_EVENT = 'na:password-change-required'
+
 /**
  * Pull the backend's human-readable message out of an error response body.
  *
- * FastAPI raises two shapes:
+ * FastAPI raises three shapes:
  *  - ``{"detail": "<string>"}`` for HTTPException-detail messages (the vast
  *    majority of the 4xx we care about, e.g. "Cannot delete 'sw-ot': it has 5
  *    downstream device(s)...")
  *  - ``{"detail": [{"msg": "...", "loc": [...]}, ...]}`` for Pydantic
  *    validation errors (e.g. the invalid device type).
+ *  - ``{"detail": {"code": "...", "message": "..."}}`` where the frontend has
+ *    to tell the cases apart (the forced password change).
  *
  * Passing the real message through to the UI is important for the admin panel,
  * so callers can display exactly what the backend said instead of a generic
@@ -82,8 +93,19 @@ function extractErrorMessage(
         .filter((message): message is string => message !== null)
       if (messages.length > 0) return messages.join('; ')
     }
+    if (typeof detail === 'object' && detail !== null && 'message' in detail) {
+      return String(detail.message)
+    }
   }
   return `${fallback} (HTTP ${response.status})`
+}
+
+/** The ``code`` of a ``{"detail": {"code": ...}}`` error body, if it has one. */
+function errorCode(body: unknown): string | null {
+  const detail = (body as { detail?: unknown } | null)?.detail
+  return typeof detail === 'object' && detail !== null && 'code' in detail
+    ? String(detail.code)
+    : null
 }
 
 interface RequestOptions {
@@ -129,7 +151,14 @@ async function request<T>(
       `Request to ${path} failed`,
     )
     if (response.status === 401 && (options.unauthorizedIsExpired ?? true)) {
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
       throw new UnauthorizedError()
+    }
+    if (
+      response.status === 403 &&
+      errorCode(body) === 'password_change_required'
+    ) {
+      window.dispatchEvent(new Event(PASSWORD_CHANGE_REQUIRED_EVENT))
     }
     throw new Error(message)
   }
@@ -251,24 +280,43 @@ export function fetchPlaybook(
   )
 }
 
+/** A single-use ticket that opens the status stream once, within 30 s. */
+function fetchStreamTicket(): Promise<{ ticket: string; expires_in: number }> {
+  return request('/api/stream/ticket', { method: 'POST', authenticated: true })
+}
+
+const STREAM_RETRY_MIN_MS = 1_000
+const STREAM_RETRY_MAX_MS = 30_000
+
+/**
+ * Follow the live device statuses until the returned function is called.
+ *
+ * EventSource cannot set an Authorization header, and the login token must
+ * not travel in a URL (URLs end up in logs and in the browser history). So
+ * every connection is opened with a ticket: short-lived, good for one
+ * connection, and fetched with the normal Authorization header.
+ *
+ * For the same reason EventSource's own reconnecting is not used: it would
+ * come back with the URL it already has, whose ticket is used up. When the
+ * connection drops it is closed, and a new one is opened with a new ticket,
+ * after 1 s, 2 s, 4 s ... (at most 30 s) while it keeps failing.
+ */
 export function subscribeToStatusStream(
   onUpdate: (data: Record<string, DeviceStatusDTO>) => void,
   onError?: (err: Event) => void,
 ): () => void {
-  // The backend's SSE endpoint authenticates via a `token` query parameter
-  // (EventSource cannot set an Authorization header), so the stored JWT is
-  // appended to the URL. Without a token there is nothing to authenticate with
-  // and no connection should be attempted.
-  const token = getStoredToken()
-  if (token === null) {
+  // Without a token there is nothing to get a ticket with.
+  if (getStoredToken() === null) {
     return () => {}
   }
 
-  const eventSource = new EventSource(
-    `${API_BASE_URL}/api/stream/status?token=${encodeURIComponent(token)}`,
-  )
+  let eventSource: EventSource | null = null
+  let retryTimer: number | undefined
+  let failures = 0
+  let stopped = false
 
   const handleMessage = (event: MessageEvent<string>) => {
+    failures = 0 // the connection works: the next retry starts at 1 s again
     try {
       onUpdate(JSON.parse(event.data) as Record<string, DeviceStatusDTO>)
     } catch (err) {
@@ -276,19 +324,47 @@ export function subscribeToStatusStream(
     }
   }
 
-  // The backend emits named "status" events, so the browser dispatches them as
-  // "status" (not the default "message") and onmessage alone would never fire.
-  // We register for both so the subscription works either way.
-  eventSource.onmessage = handleMessage
-  eventSource.addEventListener('status', handleMessage as EventListener)
-
-  eventSource.onerror = (err) => {
-    onError?.(err)
+  const retryLater = () => {
+    if (stopped) return
+    const delay = Math.min(STREAM_RETRY_MIN_MS * 2 ** failures, STREAM_RETRY_MAX_MS)
+    failures += 1
+    retryTimer = window.setTimeout(connect, delay)
   }
 
+  const connect = () => {
+    fetchStreamTicket()
+      .then(({ ticket }) => {
+        if (stopped) return
+        const source = new EventSource(
+          `${API_BASE_URL}/api/stream/status?ticket=${encodeURIComponent(ticket)}`,
+        )
+        eventSource = source
+        // The backend emits named "status" events, so the browser dispatches
+        // them as "status" (not the default "message") and onmessage alone
+        // would never fire. We register for both so the subscription works
+        // either way.
+        source.onmessage = handleMessage
+        source.addEventListener('status', handleMessage as EventListener)
+        source.onerror = (err) => {
+          source.close()
+          onError?.(err)
+          retryLater()
+        }
+      })
+      .catch((err: unknown) => {
+        // A 401 means the session is over: the app is logging out, and a new
+        // ticket would be refused too. Anything else (the backend is
+        // restarting, the network is down) is worth another try.
+        if (!(err instanceof UnauthorizedError)) retryLater()
+      })
+  }
+
+  connect()
+
   return () => {
-    eventSource.removeEventListener('status', handleMessage as EventListener)
-    eventSource.close()
+    stopped = true
+    window.clearTimeout(retryTimer)
+    eventSource?.close()
   }
 }
 
@@ -426,6 +502,26 @@ export function chaosRestoreAll(): Promise<ChaosState> {
     method: 'POST',
     authenticated: true,
   })
+}
+
+// --- Audit log (admin) --------------------------------------------------------
+
+/** One page of the audit log, newest first. Both filters are exact matches. */
+export function fetchAudit(
+  params: {
+    actor?: string
+    action?: string
+    limit?: number
+    offset?: number
+  } = {},
+): Promise<AuditPage> {
+  const query = new URLSearchParams()
+  if (params.actor) query.set('actor', params.actor)
+  if (params.action) query.set('action', params.action)
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  if (params.offset !== undefined) query.set('offset', String(params.offset))
+  const suffix = query.size > 0 ? `?${query.toString()}` : ''
+  return request<AuditPage>(`/api/audit${suffix}`, { authenticated: true })
 }
 
 // --- User management (Ticket 4.3) --------------------------------------------

@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,7 +54,33 @@ class Settings(BaseSettings):
     # real deployment. It exists ONLY for local development convenience.
     JWT_SECRET_KEY: str = "CHANGE_ME_DEV_ONLY_INSECURE_DEFAULT"
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 480  # 8h, matching the original tool's session TTL
+    # How long a login lasts. There are no refresh tokens: after this the user
+    # logs in again.
+    JWT_EXPIRE_MINUTES: int = 60
+
+    # Initial credentials (app/db/seed_users.py, docs/security.md).
+    # Passwords the two seeded accounts get when the database is first
+    # created. Unset (or empty): a random one is generated and written to the
+    # log once. Either way the account must change it at first login.
+    ADMIN_INITIAL_PASSWORD: str | None = None
+    VIEWER_INITIAL_PASSWORD: str | None = None
+    # INSECURE, for demos only. True seeds the documented demo credentials
+    # (admin / admin123, viewer / viewer123) and switches the forced password
+    # change off. Never set it on a network you care about.
+    DEMO_MODE: bool = False
+
+    @field_validator("CORS_ORIGINS")
+    @classmethod
+    def _exact_origins_only(cls, origins: list[str]) -> list[str]:
+        """CORS is strict: every allowed origin is spelled out. No wildcard,
+        and an origin is scheme://host[:port] with nothing after it."""
+        for origin in origins:
+            rest = origin.removeprefix("https://").removeprefix("http://")
+            if rest == origin or not rest or any(char in rest for char in "*/ "):
+                raise ValueError(
+                    f"CORS_ORIGINS entry {origin!r} is not an exact origin such as http://localhost:8080"
+                )
+        return origins
 
 
 settings = Settings()

@@ -1,9 +1,11 @@
 """Admin-only user management API (list, create, delete accounts)."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
-from app.core.deps import require_role
+from app.core.deps import Audit, require_role
 from app.core.security import hash_password
 from app.db.session import get_session
 from app.models.user import User
@@ -26,6 +28,7 @@ def create_user(
     payload: UserCreate,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> UserOut:
     existing = session.exec(
         select(User).where(User.username == payload.username)
@@ -45,11 +48,15 @@ def create_user(
         username=payload.username,
         password_hash=hash_password(payload.password),
         role=payload.role,
+        # Tokens older than this are not this account's (app/core/deps.py).
+        created_at=datetime.now(timezone.utc),
     )
     session.add(user)
     session.commit()
     session.refresh(user)
-    return UserOut.model_validate(user)
+    created = UserOut.model_validate(user)
+    audit.record(current_user.username, "user.created", created.username, role=created.role)
+    return created
 
 
 @router.delete("/{user_id}", status_code=204)
@@ -57,6 +64,7 @@ def delete_user(
     user_id: int,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> None:
     user = session.get(User, user_id)
     if user is None:
@@ -80,5 +88,7 @@ def delete_user(
                 detail="Cannot delete the last remaining admin account",
             )
 
+    username, role = user.username, user.role
     session.delete(user)
     session.commit()
+    audit.record(current_user.username, "user.deleted", username, role=role)

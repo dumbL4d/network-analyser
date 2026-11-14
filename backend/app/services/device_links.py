@@ -108,13 +108,16 @@ def add_link(session: Session, a: str, b: str) -> DeviceLink:
     return link
 
 
-def delete_link(session: Session, link_id: int) -> None:
-    """Delete one link by its id, or raise ``LinkNotFound``."""
+def delete_link(session: Session, link_id: int) -> tuple[str, str]:
+    """Delete one link by its id, or raise ``LinkNotFound``. Returns the two
+    devices it joined."""
     link = session.get(DeviceLink, link_id)
     if link is None:
         raise LinkNotFound(link_id)
+    pair = (link.device_a_id, link.device_b_id)
     session.delete(link)
     session.commit()
+    return pair
 
 
 def remove_links_of(session: Session, device_id: str) -> None:

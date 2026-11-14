@@ -33,6 +33,12 @@ os.environ.update(
         "JWT_SECRET_KEY": "test-only-secret",
         "JWT_ALGORITHM": "HS256",
         "JWT_EXPIRE_MINUTES": "480",
+        # The suite logs in as admin / admin123 and viewer / viewer123. What
+        # happens without DEMO_MODE is covered in test_security.py.
+        "DEMO_MODE": "true",
+        "ADMIN_INITIAL_PASSWORD": "",
+        "VIEWER_INITIAL_PASSWORD": "",
+        "CORS_ORIGINS": '["http://localhost:5173"]',
         "PING_PRIVILEGED": "true",
         "PING_TIMEOUT_SECONDS": "2.0",
         "PING_INTERVAL_SECONDS": "10.0",
@@ -57,7 +63,9 @@ from app.services.debounce import debouncer  # noqa: E402
 from app.services.flap_store import flap_store  # noqa: E402
 from app.services.history_store import history_store  # noqa: E402
 from app.services.incident_tracker import incident_tracker  # noqa: E402
+from app.services.rate_limit import login_throttle  # noqa: E402
 from app.services.status_store import status_store  # noqa: E402
+from app.services.stream_tickets import stream_tickets  # noqa: E402
 
 # Hard stop if the engine is not pointing at the temp file (for example because
 # ``app`` was imported before this module): the ``db`` fixture drops every table.
@@ -81,10 +89,18 @@ def _remove_temp_database() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _fresh_in_memory_stores() -> None:
-    """The status/history/flap stores, the debouncer and the incident tracker
-    are process-wide singletons that the app imports by name, so they are
-    reset in place before every test."""
-    for store in (status_store, history_store, flap_store, debouncer, incident_tracker):
+    """The status/history/flap stores, the debouncer, the incident tracker,
+    the login throttle and the stream tickets are process-wide singletons that
+    the app imports by name, so they are reset in place before every test."""
+    for store in (
+        status_store,
+        history_store,
+        flap_store,
+        debouncer,
+        incident_tracker,
+        login_throttle,
+        stream_tickets,
+    ):
         store.__init__()
     chaos_controller.reset()  # forget injected faults and end any flap
 

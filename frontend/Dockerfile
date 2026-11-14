@@ -36,6 +36,16 @@ COPY --from=build /app/dist /usr/share/nginx/html
 
 # SPA fallback: client-side routes (React Router) must be served index.html
 # on refresh / direct-URL access, otherwise /devices/sw-ot would 404 here.
+# nginx.conf also sets the security headers.
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Its Content-Security-Policy lets the page connect to the API and to nothing
+# else, so it has to name the API: the origin (scheme://host:port) of the same
+# VITE_API_BASE_URL that was baked into the bundle above, with the same
+# fallback as src/lib/api.ts. `nginx -t` fails the build on a broken result.
+ARG VITE_API_BASE_URL
+RUN origin="$(echo "${VITE_API_BASE_URL:-http://localhost:8000}" | sed -E 's|^([a-z]+://[^/]+).*|\1|')" \
+    && sed -i "s|__API_ORIGIN__|${origin}|" /etc/nginx/conf.d/default.conf \
+    && nginx -t
 
 EXPOSE 80

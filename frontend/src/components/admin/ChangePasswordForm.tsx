@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useAuth } from '@/contexts/AuthContext'
 import { changePassword } from '@/lib/api'
 
 /**
@@ -12,6 +13,7 @@ import { changePassword } from '@/lib/api'
  * can rotate their seeded default password.
  */
 export default function ChangePasswordForm() {
+  const { passwordChanged } = useAuth()
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -30,6 +32,7 @@ export default function ChangePasswordForm() {
       })
       setCurrentPassword('')
       setNewPassword('')
+      passwordChanged() // a seeded password is gone: the rest of the app opens
       setSuccess('Password updated successfully')
       // Auto-clear the success note so a later failure isn't shown alongside a
       // stale success (no toast dependency needed for MVP).
