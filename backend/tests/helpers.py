@@ -7,7 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from sqlalchemy import inspect
+
 from app.core.config import settings
+from app.db.session import engine
 from app.models.device import Device
 from app.services.ping_engine import DeviceStatus, PingFn, StatusKey
 from app.services.poll_loop import run_poll_loop
@@ -22,6 +25,14 @@ def make_status(
         latency_ms=latency_ms,
         timestamp=datetime.now(timezone.utc),
     )
+
+
+def wipe_database() -> None:
+    """Drop every table, ``alembic_version`` included, leaving an empty
+    database that the next ``init_db()`` builds from the first migration."""
+    with engine.begin() as connection:
+        for table in inspect(connection).get_table_names():
+            connection.exec_driver_sql(f'DROP TABLE "{table}"')
 
 
 def seed_devices() -> list[Device]:

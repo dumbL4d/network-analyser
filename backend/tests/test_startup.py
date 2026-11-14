@@ -3,13 +3,14 @@
 import asyncio
 
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, select
+from sqlmodel import Session, select
 
 from app import main
 from app.core.config import settings
 from app.db.seed import seed_devices_from_json
 from app.db.session import engine
 from app.models import AppSettings, Device, User
+from tests.helpers import wipe_database
 
 
 def _row_counts() -> tuple[int, int, int]:
@@ -22,9 +23,9 @@ def _row_counts() -> tuple[int, int, int]:
 
 
 def test_startup_creates_and_seeds_an_empty_database():
-    SQLModel.metadata.drop_all(engine)
+    wipe_database()
 
-    with TestClient(main.app):
+    with TestClient(main.app):  # startup runs the migrations, then the seeds
         assert _row_counts() == (11, 2, 1)  # devices, users, settings rows
 
 

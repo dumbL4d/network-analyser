@@ -14,9 +14,16 @@ export const DEVICE_TYPES = [
 export type DeviceType = (typeof DEVICE_TYPES)[number]
 
 export interface DeviceStatusDTO {
+  /** Confirmed (debounced) status. */
   status: DeviceStatus
   latency_ms: number | null
   timestamp: string
+  /** The latest poll's raw result, before debouncing. */
+  raw_status: DeviceStatus
+  /** Polls in a row whose raw result was not healthy. */
+  consecutive_failures: number
+  /** Polls in a row whose raw result was healthy. */
+  consecutive_successes: number
 }
 
 export interface DeviceOut {

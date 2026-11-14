@@ -10,6 +10,8 @@ DEFAULTS = {
     "latency_warn_ms": 100.0,
     "latency_crit_ms": 500.0,
     "flap_threshold": 3,
+    "failure_threshold": 3,
+    "recovery_threshold": 2,
 }
 
 
@@ -72,3 +74,52 @@ def test_thresholds_can_be_moved_together(client, admin_headers):
 
     assert response.status_code == 200
     assert (response.json()["latency_warn_ms"], response.json()["latency_crit_ms"]) == (600.0, 900.0)
+
+
+# --- debounce thresholds (failure_threshold / recovery_threshold) --------------
+
+DEBOUNCE_FIELDS = ["failure_threshold", "recovery_threshold"]
+
+
+@pytest.mark.parametrize("field", DEBOUNCE_FIELDS)
+@pytest.mark.parametrize("value", [1, 10])
+def test_debounce_threshold_accepts_the_ends_of_its_range(client, admin_headers, field, value):
+    response = _patch(client, admin_headers, **{field: value})
+
+    assert response.status_code == 200
+    assert response.json() == {**DEFAULTS, field: value}
+    assert _settings(client, admin_headers) == response.json()  # persisted
+
+
+@pytest.mark.parametrize("field", DEBOUNCE_FIELDS)
+@pytest.mark.parametrize("value", [0, 11, -1])
+def test_debounce_threshold_outside_1_to_10_is_rejected(client, admin_headers, field, value):
+    response = _patch(client, admin_headers, **{field: value})
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": f"{field} must be between 1 and 10"}
+    assert _settings(client, admin_headers) == DEFAULTS  # nothing was saved
+
+
+@pytest.mark.parametrize("field", DEBOUNCE_FIELDS)
+def test_debounce_threshold_must_be_a_whole_number(client, admin_headers, field):
+    assert _patch(client, admin_headers, **{field: 2.5}).status_code == 422
+    assert _patch(client, admin_headers, **{field: "three"}).status_code == 422
+
+
+def test_the_admin_settings_form_payload_is_accepted(client, admin_headers):
+    # The Admin > Settings tab sends every field on Save, changed or not.
+    form = {
+        "site_name": "Plant 2",
+        "poll_interval_seconds": 20.0,
+        "latency_warn_ms": 150.0,
+        "latency_crit_ms": 600.0,
+        "flap_threshold": 4,
+        "failure_threshold": 5,
+        "recovery_threshold": 1,
+    }
+
+    response = _patch(client, admin_headers, **form)
+
+    assert response.status_code == 200
+    assert response.json() == {"id": 1, **form}

@@ -13,6 +13,8 @@ interface SettingsFormState {
   latency_warn_ms: string
   latency_crit_ms: string
   flap_threshold: string
+  failure_threshold: string
+  recovery_threshold: string
 }
 
 /**
@@ -20,9 +22,9 @@ interface SettingsFormState {
  * change any values via the API without a backend restart; the poll loop picks
  * them up on its next cycle.
  *
- * MVP choice (documented): on Save, ALL five current form values are sent as
- * one PATCH, not just the dirty fields. Exact same effect as change-tracking
- * for a 5-field form, without the bookkeeping.
+ * MVP choice (documented): on Save, ALL current form values are sent as one
+ * PATCH, not just the dirty fields. Exact same effect as change-tracking for a
+ * form this small, without the bookkeeping.
  */
 export default function AdminSettingsTab() {
   const [form, setForm] = useState<SettingsFormState | null>(null)
@@ -42,6 +44,8 @@ export default function AdminSettingsTab() {
           latency_warn_ms: String(settings.latency_warn_ms),
           latency_crit_ms: String(settings.latency_crit_ms),
           flap_threshold: String(settings.flap_threshold),
+          failure_threshold: String(settings.failure_threshold),
+          recovery_threshold: String(settings.recovery_threshold),
         })
       })
       .catch((err: unknown) => {
@@ -67,6 +71,8 @@ export default function AdminSettingsTab() {
         latency_warn_ms: Number(form.latency_warn_ms),
         latency_crit_ms: Number(form.latency_crit_ms),
         flap_threshold: Number(form.flap_threshold),
+        failure_threshold: Number(form.failure_threshold),
+        recovery_threshold: Number(form.recovery_threshold),
       })
       setSuccess('Settings updated')
       window.setTimeout(() => setSuccess(null), 4000)
@@ -173,6 +179,47 @@ export default function AdminSettingsTab() {
                 />
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="set-failure">
+                  Failure threshold (polls, 1–10)
+                </Label>
+                <Input
+                  id="set-failure"
+                  type="number"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={form.failure_threshold}
+                  onChange={(e) =>
+                    setForm({ ...form, failure_threshold: e.target.value })
+                  }
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="set-recovery">
+                  Recovery threshold (polls, 1–10)
+                </Label>
+                <Input
+                  id="set-recovery"
+                  type="number"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={form.recovery_threshold}
+                  onChange={(e) =>
+                    setForm({ ...form, recovery_threshold: e.target.value })
+                  }
+                  required
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Debouncing: a device's status gets worse only after this many bad
+              polls in a row, and better only after this many good polls in a
+              row. Set both to 1 to switch debouncing off.
+            </p>
             {success !== null && (
               <p className="text-sm text-green-600">{success}</p>
             )}

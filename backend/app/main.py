@@ -52,12 +52,19 @@ def resolve_seed_path() -> Path:
 
 
 def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
-    """Shape the store's state into the JSON payload sent to clients."""
+    """Shape the store's state into the JSON payload sent to clients.
+
+    ``status`` is the confirmed (debounced) status. ``raw_status`` and the two
+    counters were added with debouncing; the first three keys are unchanged.
+    """
     return {
         device_id: {
             "status": status.status,
             "latency_ms": status.latency_ms,
             "timestamp": status.timestamp.isoformat(),
+            "raw_status": status.raw_status or status.status,
+            "consecutive_failures": status.consecutive_failures,
+            "consecutive_successes": status.consecutive_successes,
         }
         for device_id, status in snapshot.items()
     }

@@ -14,6 +14,9 @@ entire warehouse LAN so the whole system runs on one machine.
 
 - **ICMP monitoring** — an async `icmplib` ping engine probes every device on a
   configurable interval (~10 s default) and classifies each one.
+- **Debounced status** — a device changes state only after several polls in a
+  row agree (3 to get worse, 2 to recover by default), so one lost ping does
+  not raise an incident.
 - **Live dashboards** — a Server-Sent Events (SSE) stream pushes full status
   snapshots to every connected browser; latency history, flap counts, and
   incident lists come on top via REST.
@@ -47,6 +50,7 @@ flowchart LR
         SSE["SSE /api/stream/status"]
         POLL["Poll loop<br/>(background task)"]
         PING["Ping engine<br/>(icmplib, async ICMP)"]
+        DEB["Debouncer<br/>(raw result to confirmed status)"]
         ST["StatusStore<br/>(snapshot + pub/sub)"]
         HS["HistoryStore<br/>(rolling deques)"]
         FS["FlapStore<br/>(flap counts)"]
@@ -58,7 +62,7 @@ flowchart LR
         SIM["11 × sim-* containers<br/>(Alpine ICMP stubs)"]
     end
 
-    UI -- "browser calls :8000 directly" --> PING
+    UI -- "browser calls :8000 directly" --> API
     API --> DB
     API --> ST
     API --> HS
@@ -69,9 +73,10 @@ flowchart LR
     POLL --> DB
     POLL --> PING
     PING -- "ICMP echo" --> SIM
-    POLL --> ST
-    POLL --> HS
-    POLL --> FS
+    POLL -- "raw results" --> DEB
+    DEB -- "confirmed status" --> ST
+    DEB -- "confirmed status" --> FS
+    POLL -- "raw readings" --> HS
 
     UI -- "loads bundle" --> STATIC
 ```
@@ -89,13 +94,14 @@ user's browser straight to the backend.
 │   ├── app/
 │   │   ├── main.py          App factory, lifespan (DB seed + poll loop), SSE endpoint
 │   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth deps
-│   │   ├── db/              SQLAlchemy/sqlmodel session + seed scripts
+│   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
 │   │   ├── models/          Device, User, AppSettings (SQLModel tables)
 │   │   ├── routers/         auth, devices, settings, users, history, flaps, incidents, playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
-│   │   ├── services/        ping_engine, poll_loop, status/history/flap stores, incident_analysis
+│   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis
 │   │   └── data/playbooks.py  Static guided-fix playbook content
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
+│   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
 │   └── Dockerfile
 ├── frontend/                React SPA (React 19 + TypeScript + Vite)
 │   ├── src/
@@ -114,22 +120,24 @@ user's browser straight to the backend.
 ## Backend (FastAPI)
 
 The backend is a single FastAPI app (`backend/app/main.py`) that, at startup
-(`lifespan`), initializes the SQLite DB, seeds devices from
+(`lifespan`), brings the SQLite schema up to date (see
+[Database migrations](#database-migrations)), seeds devices from
 `infra/devices.seed.json`, seeds default users and settings, and launches the
-foreground poll loop as a background `asyncio` task.
+poll loop as a background `asyncio` task.
 
 ### The poll loop
 
 ```mermaid
 flowchart TD
-    A["Startup: init DB, seed devices / users / settings"] --> B["Start poll loop task"]
-    B --> C["Read AppSettings row from DB<br/>(poll interval + latency thresholds)"]
+    A["Startup: migrate DB (alembic upgrade head),<br/>seed devices / users / settings"] --> B["Start poll loop task"]
+    B --> C["Read AppSettings row from DB<br/>(poll interval, latency and debounce thresholds)"]
     C --> D["Load devices (id, ip) from Device table"]
     D --> E["ping_all()<br/>concurrent async ICMP probes via icmplib"]
-    E --> F["classify_status() per device:<br/>healthy / degraded / down / unknown"]
-    F --> G["status_store.update()<br/>notify SSE subscribers"]
-    F --> H["history_store.record()<br/>append to rolling deques"]
-    F --> I["flap_store.record()<br/>count status changes"]
+    E --> F["classify_status() per device: the RAW result<br/>healthy / degraded / down / unknown"]
+    F --> K["debouncer.apply()<br/>raw results in, CONFIRMED status out"]
+    F --> H["history_store.record()<br/>raw readings, rolling deques"]
+    K --> G["status_store.update()<br/>confirmed status, notify SSE subscribers"]
+    K --> I["flap_store.record()<br/>count confirmed status changes"]
     G --> J["asyncio.sleep(interval)"]
     H --> J
     I --> J
@@ -138,8 +146,8 @@ flowchart TD
 
 Everything the poll loop needs is re-read from the DB-backed `AppSettings`
 singleton at the **start of every cycle**, so an admin editing the poll
-interval or latency thresholds in the UI takes effect within one cycle — no
-backend restart required.
+interval, the latency thresholds or the debounce thresholds in the UI takes
+effect within one cycle — no backend restart required.
 
 Setting `POLL_ENABLED=False` starts the API without the poll loop (the test
 suite does this). Nothing is pinged, so every device stays `unknown`.
@@ -155,11 +163,86 @@ Each probe is classified against live latency thresholds:
 | `down`          | unreachable (ICMP timed out)                     |
 | `unknown`       | probe failed with an exception (no result)       |
 
+### Status debouncing
+
+The result above is a device's **raw** status for one poll. A single lost ICMP
+packet reads as a raw `down`, so the dashboards, the flap counter and the
+incident analysis do not use it directly. They use the **confirmed** status,
+which changes only when several polls in a row agree. The logic is a pure
+state machine in `backend/app/services/debounce.py`.
+
+Statuses are ranked `healthy < degraded < down < unknown`, and three rules
+decide each device's confirmed status:
+
+1. A device's first result is accepted as it is.
+2. **Getting worse:** when the last `failure_threshold` raw results are all
+   worse than the confirmed status, it becomes the mildest of them.
+3. **Getting better:** when the last `recovery_threshold` raw results are all
+   better than the confirmed status, it becomes the worst of them.
+
+With the defaults, a device is marked `down` only after 3 lost pings in a row
+and `healthy` again only after 2 replies in a row. Moves between `healthy` and
+`degraded` follow the same two rules. A probe error (`unknown`) ranks worst, so
+it does not interrupt a run of `down` results.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    healthy --> degraded: F polls in a row not healthy
+    healthy --> down: F polls in a row all down
+    degraded --> down: F polls in a row all down
+    down --> degraded: R polls in a row not down
+    degraded --> healthy: R polls in a row all healthy
+    down --> healthy: R polls in a row all healthy
+```
+
+`F` is `failure_threshold` and `R` is `recovery_threshold`:
+
+| Setting              | Default | Range | Meaning                                              |
+| -------------------- | ------- | ----- | ---------------------------------------------------- |
+| `failure_threshold`  | 3       | 1–10  | polls in a row before a worse status is confirmed    |
+| `recovery_threshold` | 2       | 1–10  | polls in a row before a better status is confirmed   |
+
+Both are edited in Admin → Settings (or `PATCH /api/settings`) and are re-read
+every poll cycle. Setting both to 1 switches debouncing off.
+
+Each device in the status snapshot (`/api/status` and the SSE stream) carries
+the confirmed status plus the raw details. This one has just missed a poll:
+
+```json
+{
+  "sw-ot": {
+    "status": "healthy",
+    "latency_ms": null,
+    "timestamp": "2026-11-15T10:00:20.123456+00:00",
+    "raw_status": "down",
+    "consecutive_failures": 1,
+    "consecutive_successes": 0
+  }
+}
+```
+
+- `status` is the confirmed status; `raw_status` is the latest poll's result.
+- `latency_ms` and `timestamp` belong to the latest poll.
+- `consecutive_failures` / `consecutive_successes` count the polls in a row
+  that were not healthy / were healthy.
+
+Things to know:
+
+- Latency history, and the reachability figure in the Metrics view, are built
+  from the raw readings. Intermittent loss that never reaches the threshold
+  shows up there rather than as a status change or a flap.
+- Debounce state is in memory. After a backend restart each device's first
+  result is accepted at once; a deleted device's state is dropped on the next
+  cycle.
+
 ### Incident analysis
 
 `incident_analysis.analyze_incidents()` is a pure function — status snapshot +
 device tree in, classified incidents out. It is re-evaluated from scratch on
-every `/api/incidents` request, so recovery reclassifies immediately.
+every `/api/incidents` request, so recovery reclassifies immediately. It works
+on the confirmed statuses, so an unconfirmed lost ping does not create an
+incident.
 
 ```mermaid
 flowchart TD
@@ -324,8 +407,10 @@ flowchart LR
 - **13 containers total** when running (11 sims + backend + frontend).
 
 Persisted SQLite data (settings, users, devices) survives `down`/`up` and
-rebuilds via the `backend-data` volume; flap counts and latency history are
-in-memory and reset on backend restart by design.
+rebuilds via the `backend-data` volume, and the backend upgrades its schema in
+place at startup (see [Database migrations](#database-migrations)). Flap
+counts, latency history and debounce state are in-memory and reset on backend
+restart by design.
 
 ## Running with Docker Compose
 
@@ -373,6 +458,47 @@ docker compose -f infra/docker-compose.yml down   # or the whole stack
 
 Or run the whole stack (sims + backend + frontend) per **`infra/README.md`**.
 
+## Database migrations
+
+The SQLite schema is managed with [Alembic](https://alembic.sqlalchemy.org/).
+The migration scripts live in `backend/app/db/migrations/versions/` and are
+applied automatically: at startup, before seeding, the backend runs the
+equivalent of `alembic upgrade head`. A new database is built from the first
+migration; an existing one gets only the migrations it is missing and keeps
+its data.
+
+- `0001` is the baseline: the `device`, `user` and `appsettings` tables as they
+  were before Alembic. It creates only the tables that are missing, so a
+  database from an older version (for example the `backend-data` Docker
+  volume) is adopted as it is.
+- `0002` adds `failure_threshold` and `recovery_threshold` to `appsettings`.
+
+Every change to a model in `backend/app/models/` needs a migration:
+
+```sh
+cd backend
+source .venv/bin/activate
+alembic upgrade head      # bring your local database up to date first
+# ...edit the model...
+alembic revision --autogenerate --rev-id 0003 -m "describe the change"
+# review the new file in app/db/migrations/versions/, then:
+alembic upgrade head      # or simply start the backend
+pytest                    # test_migrations.py fails if a model has no migration
+```
+
+What to check in a generated migration:
+
+- A new NOT NULL column needs a `server_default`. Without one, SQLite refuses
+  to add it to a table that already has rows.
+- Batch mode (`render_as_batch=True`) is on, so Alembic rebuilds a table when
+  SQLite cannot alter it in place.
+- Use the next number as `--rev-id`, so the history reads `0001`, `0002`, ...
+
+`alembic current`, `alembic history` and `alembic downgrade -1` are useful
+while developing. The command line works on the same database as the app (the
+one named by `DATABASE_PATH`); `backend/alembic.ini` only tells it where the
+scripts are.
+
 ## Testing
 
 Backend tests live in `backend/tests/` and run with pytest. They need no
@@ -415,7 +541,7 @@ request.
 
 | Layer        | Technologies                                                                  |
 | ------------ | ----------------------------------------------------------------------------- |
-| Backend      | Python 3.12, FastAPI, Uvicorn, SQLModel + SQLite, `icmplib`, sse-starlette, passlib + bcrypt (4.0.1), python-jose, pydantic-settings |
+| Backend      | Python 3.12, FastAPI, Uvicorn, SQLModel + SQLite, Alembic, `icmplib`, sse-starlette, passlib + bcrypt (4.0.1), python-jose, pydantic-settings |
 | Frontend     | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix), @xyflow/react, recharts, React Router |
 | Deployment   | Docker Compose, nginx, Alpine, multi-stage Dockerfiles                        |
 | Testing / CI | pytest, pytest-asyncio, pytest-cov, httpx (`TestClient`), GitHub Actions      |

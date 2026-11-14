@@ -51,12 +51,21 @@ PingFn = Callable[..., Awaitable[Any]]
 
 
 class DeviceStatus(BaseModel):
-    """Transient (non-persisted) runtime status for a single device."""
+    """Transient (non-persisted) runtime status for a single device.
+
+    Straight out of the ping engine, ``status`` is the raw classification of
+    this poll. The poll loop then passes each reading through the debouncer
+    (:mod:`app.services.debounce`), which replaces ``status`` with the
+    confirmed status and fills in the last three fields.
+    """
 
     device_id: str
     status: StatusKey
     latency_ms: float | None
     timestamp: datetime
+    raw_status: StatusKey | None = None
+    consecutive_failures: int = 0
+    consecutive_successes: int = 0
 
 
 def classify_status(

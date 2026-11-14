@@ -12,6 +12,8 @@ class SettingsOut(BaseModel):
     latency_warn_ms: float
     latency_crit_ms: float
     flap_threshold: int
+    failure_threshold: int
+    recovery_threshold: int
 
 
 class SettingsUpdate(BaseModel):
@@ -26,3 +28,5 @@ class SettingsUpdate(BaseModel):
     latency_warn_ms: float | None = None
     latency_crit_ms: float | None = None
     flap_threshold: int | None = None
+    failure_threshold: int | None = None
+    recovery_threshold: int | None = None

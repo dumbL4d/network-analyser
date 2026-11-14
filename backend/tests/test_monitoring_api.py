@@ -32,12 +32,32 @@ def test_status_is_empty_until_the_first_poll(client, admin_headers):
 
 def test_status_returns_the_latest_reading_per_device(client, admin_headers):
     healthy = make_status("fw-01", "healthy", 1.5)
-    down = make_status("sw-ot", "down")
-    status_store.update([healthy, down])
+    # What the debouncer publishes while one lost ping is still unconfirmed.
+    pending = make_status("sw-ot", "healthy").model_copy(
+        update={"raw_status": "down", "consecutive_failures": 1}
+    )
+    status_store.update([healthy, pending])
 
     assert client.get("/api/status", headers=admin_headers).json() == {
-        "fw-01": {"status": "healthy", "latency_ms": 1.5, "timestamp": healthy.timestamp.isoformat()},
-        "sw-ot": {"status": "down", "latency_ms": None, "timestamp": down.timestamp.isoformat()},
+        "fw-01": {
+            # The three original keys...
+            "status": "healthy",
+            "latency_ms": 1.5,
+            "timestamp": healthy.timestamp.isoformat(),
+            # ...and the ones added with debouncing. A reading that never went
+            # through the debouncer reports its status as the raw status.
+            "raw_status": "healthy",
+            "consecutive_failures": 0,
+            "consecutive_successes": 0,
+        },
+        "sw-ot": {
+            "status": "healthy",
+            "latency_ms": None,
+            "timestamp": pending.timestamp.isoformat(),
+            "raw_status": "down",
+            "consecutive_failures": 1,
+            "consecutive_successes": 0,
+        },
     }
     assert healthy.timestamp.isoformat().endswith("+00:00")  # the format clients receive
 
@@ -196,7 +216,14 @@ async def test_status_stream_sends_the_snapshot_then_each_update_then_unsubscrib
     second = await anext(events)
     assert second["event"] == "status"
     assert json.loads(second["data"]) == {
-        "fw-01": {"status": "down", "latency_ms": None, "timestamp": went_down.timestamp.isoformat()}
+        "fw-01": {
+            "status": "down",
+            "latency_ms": None,
+            "timestamp": went_down.timestamp.isoformat(),
+            "raw_status": "down",
+            "consecutive_failures": 0,
+            "consecutive_successes": 0,
+        }
     }
 
     await events.aclose()  # the browser disconnects

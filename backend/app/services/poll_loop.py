@@ -11,6 +11,11 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models.device import Device
 from app.models.settings import AppSettings
+from app.services.debounce import (
+    DEFAULT_FAILURE_THRESHOLD,
+    DEFAULT_RECOVERY_THRESHOLD,
+    debouncer,
+)
 from app.services.flap_store import flap_store
 from app.services.history_store import history_store
 from app.services.ping_engine import PingFn, ping_all
@@ -31,11 +36,16 @@ async def run_poll_loop(
 ) -> None:
     """Ping all devices forever, publishing each snapshot to the status store.
 
-    The monitoring-behavior values (poll interval + latency thresholds) are
-    re-read from the DB-backed ``AppSettings`` singleton at the START of every
-    iteration, so admin edits take effect within one cycle without a backend
-    restart. Timeout and privileged mode remain low-level concerns read from
-    the static .env-backed ``Settings`` object.
+    The monitoring-behavior values (poll interval, latency thresholds and the
+    debounce thresholds) are re-read from the DB-backed ``AppSettings``
+    singleton at the START of every iteration, so admin edits take effect
+    within one cycle without a backend restart. Timeout and privileged mode
+    remain low-level concerns read from the static .env-backed ``Settings``
+    object.
+
+    Each cycle's raw readings go through the debouncer. The status store and
+    the flap store receive the CONFIRMED statuses; the history store keeps the
+    raw readings.
 
     ``ping`` and ``sleep`` default to the real ICMP ping and ``asyncio.sleep``.
     They are parameters only so tests can inject fakes and step the loop one
@@ -61,10 +71,14 @@ async def run_poll_loop(
                 interval = settings.PING_INTERVAL_SECONDS
                 warn_threshold = settings.LATENCY_WARN_MS
                 crit_threshold = settings.LATENCY_CRIT_MS
+                failure_threshold = DEFAULT_FAILURE_THRESHOLD
+                recovery_threshold = DEFAULT_RECOVERY_THRESHOLD
             else:
                 interval = app_settings.poll_interval_seconds
                 warn_threshold = app_settings.latency_warn_ms
                 crit_threshold = app_settings.latency_crit_ms
+                failure_threshold = app_settings.failure_threshold
+                recovery_threshold = app_settings.recovery_threshold
 
             devices = _load_devices()
             results = await ping_all(
@@ -75,9 +89,13 @@ async def run_poll_loop(
                 crit_threshold=crit_threshold,
                 ping=ping,
             )
-            status_store.update(results)
-            history_store.record(results)
-            flap_store.record(results)
+            # `results` are this cycle's raw readings. The debouncer works out
+            # each device's confirmed status, and forgets devices that were not
+            # polled this cycle (deleted ones).
+            confirmed = debouncer.apply(results, failure_threshold, recovery_threshold)
+            status_store.update(confirmed)
+            history_store.record(results)  # raw readings, for the latency charts
+            flap_store.record(confirmed)  # a flap is a CONFIRMED status change
             logger.info(
                 "Status poll complete for %d devices (interval=%ss)",
                 len(results),

@@ -26,3 +26,8 @@ class AppSettings(SQLModel, table=True):
     latency_warn_ms: float = Field(default=100.0)
     latency_crit_ms: float = Field(default=500.0)
     flap_threshold: int = Field(default=3)
+    # Debouncing (app.services.debounce): how many polls in a row must agree
+    # before a worse / a better status is confirmed. Allowed range 1-10; the
+    # defaults mirror DEFAULT_FAILURE_THRESHOLD / DEFAULT_RECOVERY_THRESHOLD.
+    failure_threshold: int = Field(default=3)
+    recovery_threshold: int = Field(default=2)

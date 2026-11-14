@@ -13,6 +13,7 @@ from app.db.session import get_session
 from app.models.settings import AppSettings
 from app.models.user import User
 from app.schemas.settings import SettingsOut, SettingsUpdate
+from app.services.debounce import MAX_THRESHOLD, MIN_THRESHOLD
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -77,6 +78,15 @@ def update_settings(
             status_code=422,
             detail="latency_warn_ms must be less than latency_crit_ms",
         )
+
+    # Debounce thresholds: how many polls in a row must agree (see
+    # app.services.debounce).
+    for field in ("failure_threshold", "recovery_threshold"):
+        if field in updates and not MIN_THRESHOLD <= updates[field] <= MAX_THRESHOLD:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field} must be between {MIN_THRESHOLD} and {MAX_THRESHOLD}",
+            )
 
     for field, value in updates.items():
         setattr(row, field, value)

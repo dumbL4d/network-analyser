@@ -70,7 +70,9 @@ docker compose -f infra/docker-compose.yml down
 ```
 
 Container recreation (`down`/`up`, rebuilds, `restart`) keeps persisted data —
-settings, users, devices — in the `backend-data` named volume.
+settings, users, devices — in the `backend-data` named volume. When a newer
+backend image starts on an existing volume, it upgrades the database schema in
+place and keeps the data (see "Database migrations" in `../README.md`).
 
 Add `-v` to also delete that volume **permanently**:
 

@@ -1,0 +1,4 @@
+Alembic migration scripts for the SQLite database.
+
+How to add one, and how they are applied at startup, is described under
+"Database migrations" in the repository README.
