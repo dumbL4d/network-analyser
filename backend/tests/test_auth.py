@@ -174,6 +174,8 @@ ADMIN_ONLY = [
     ("DELETE", "/api/users/1", None),
     ("POST", "/api/incidents/1/acknowledge", None),
     ("POST", "/api/incidents/1/notes", {"text": "checked the cabling"}),
+    ("POST", "/api/links", {"device_a_id": "scanner-1", "device_b_id": "sw-server"}),
+    ("DELETE", "/api/links/1", None),
 ]
 
 
@@ -210,6 +212,8 @@ def test_a_rejected_viewer_request_changes_nothing(client, viewer_headers, admin
         "/api/incidents/history",
         "/api/stats/incidents",
         "/api/stats/availability",
+        "/api/links",
+        "/api/analysis/spof",
         "/api/playbooks/switch/down",
         "/api/settings",
     ],

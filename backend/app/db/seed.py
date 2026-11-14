@@ -6,6 +6,8 @@ from sqlmodel import Session, select
 
 from app.db.session import engine
 from app.models.device import Device
+from app.models.device_link import DeviceLink
+from app.services.device_links import LinkConflict, LinkError, check_link
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,17 @@ def _topological_order(devices: list[dict]) -> list[dict]:
 
 
 def seed_devices_from_json(json_path: str) -> None:
-    """Seed devices from the JSON topology file if present.
+    """Seed devices, and the extra links between them, from the JSON
+    topology file if present.
+
+    The file is a list of devices. A device may carry ``"links"``: the ids of
+    other devices it is linked to in addition to its parent, for example
+    ``{"id": "sw-edge-2", ..., "parentId": "fw-01", "links": ["sw-ot"]}``.
+
+    Seeding is idempotent, so it runs at every startup: a device or link that
+    is already stored is left alone, and only what is missing is added. A link
+    that breaks a rule (see app/services/device_links.py) is skipped with a
+    warning rather than stopping the startup.
 
     A missing seed file is NOT a startup error: a deployment may seed devices
     via the admin API instead of a mounted file, so skip gracefully when the
@@ -72,6 +84,29 @@ def seed_devices_from_json(json_path: str) -> None:
             existing_ids.add(item["id"])
             inserted += 1
 
+        # Links come after the devices, so both ends of every link exist.
+        links_inserted = 0
+        links_skipped = 0
+        parents = {device.id: device.parent_id for device in session.exec(select(Device)).all()}
+        stored = {
+            (link.device_a_id, link.device_b_id) for link in session.exec(select(DeviceLink)).all()
+        }
+        for item in devices_data:
+            for other_id in item.get("links", []):
+                try:
+                    device_a_id, device_b_id = check_link(parents, stored, item["id"], other_id)
+                except LinkConflict:
+                    links_skipped += 1  # stored already: nothing to do
+                    continue
+                except LinkError as error:
+                    logger.warning("Seed link %s -- %s skipped: %s", item["id"], other_id, error)
+                    links_skipped += 1
+                    continue
+                session.add(DeviceLink(device_a_id=device_a_id, device_b_id=device_b_id))
+                stored.add((device_a_id, device_b_id))
+                links_inserted += 1
+
         session.commit()
 
     print(f"Device seed complete: {inserted} inserted, {skipped} skipped")
+    print(f"Link seed complete: {links_inserted} inserted, {links_skipped} skipped")

@@ -19,6 +19,7 @@ import type {
   PlaybookOut,
 } from '@/types/incident'
 import type { AppSettingsOut, SettingsUpdate } from '@/types/settings'
+import type { LinkOut, SpofOut, WhatIfResult } from '@/types/topology'
 import type {
   PasswordChangeRequest,
   UserCreate,
@@ -331,6 +332,46 @@ export function deleteDevice(deviceId: string): Promise<void> {
   return request<void>(`/api/devices/${deviceId}`, {
     method: 'DELETE',
     authenticated: true,
+  })
+}
+
+// --- Extra links and topology analysis ---------------------------------------
+
+/** Every extra link between devices (the dashed edges of the topology). */
+export function fetchLinks(): Promise<LinkOut[]> {
+  return request<LinkOut[]>('/api/links', { authenticated: true })
+}
+
+/** Link two devices (admin). The order of the two ids does not matter. */
+export function createLink(
+  deviceAId: string,
+  deviceBId: string,
+): Promise<LinkOut> {
+  return request<LinkOut>('/api/links', {
+    method: 'POST',
+    authenticated: true,
+    body: { device_a_id: deviceAId, device_b_id: deviceBId },
+  })
+}
+
+export function deleteLink(linkId: number): Promise<void> {
+  return request<void>(`/api/links/${linkId}`, {
+    method: 'DELETE',
+    authenticated: true,
+  })
+}
+
+/** Single points of failure, largest blast radius first. */
+export function fetchSpof(): Promise<SpofOut[]> {
+  return request<SpofOut[]>('/api/analysis/spof', { authenticated: true })
+}
+
+/** What would happen if these devices failed? Changes nothing on the server. */
+export function runWhatIf(failedDeviceIds: string[]): Promise<WhatIfResult> {
+  return request<WhatIfResult>('/api/analysis/what-if', {
+    method: 'POST',
+    authenticated: true,
+    body: { failed_device_ids: failedDeviceIds },
   })
 }
 

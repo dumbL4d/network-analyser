@@ -94,8 +94,9 @@ def wipe_database() -> None:
 
 
 def seed_devices() -> list[Device]:
-    """The warehouse tree from ``infra/devices.seed.json`` as plain ``Device``
-    objects, in file order. No database involved."""
+    """The 11-device warehouse tree the suite is seeded with
+    (``tests/data/classic_tree.seed.json``) as plain ``Device`` objects, in
+    file order. No database involved."""
     items = json.loads(Path(str(settings.SEED_PATH)).read_text())
     return [
         Device(

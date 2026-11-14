@@ -14,17 +14,36 @@ the device endpoints call ``remove_links_of`` when a device is deleted and
 ``remove_link_between`` when a device is moved under one it was linked to.
 """
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 
 from sqlalchemy import delete, or_
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.models.device import Device
 from app.models.device_link import DeviceLink
+from app.services.topology_graph import TopologyGraph, build_graph
 
 
 class LinkError(ValueError):
     """A proposed link breaks one of the rules. The message says which."""
+
+
+class LinkConflict(LinkError):
+    """The two devices are connected already (rules 3 and 4). The request is
+    well-formed; it clashes with what is stored."""
+
+
+class LinkNotFound(LookupError):
+    pass
+
+
+def device_graph(devices: Iterable[Device], links: Iterable[DeviceLink]) -> TopologyGraph:
+    """The topology graph of the stored devices and links. O(V + E)."""
+    return build_graph(
+        {device.id: device.parent_id for device in devices},
+        [(link.device_a_id, link.device_b_id) for link in links],
+    )
 
 
 def canonical_pair(a: str, b: str) -> tuple[str, str]:
@@ -52,11 +71,18 @@ def check_link(
         if device_id not in parents:
             raise LinkError(f"Device '{device_id}' does not exist")
     if parents[a] == b or parents[b] == a:
-        raise LinkError(f"'{a}' and '{b}' are already connected as parent and child")
+        raise LinkConflict(f"'{a}' and '{b}' are already connected as parent and child")
     pair = canonical_pair(a, b)
     if pair in existing:
-        raise LinkError(f"'{a}' and '{b}' are already linked")
+        raise LinkConflict(f"'{a}' and '{b}' are already linked")
     return pair
+
+
+def list_links(session: Session) -> list[DeviceLink]:
+    """Every stored link, ordered by its two device ids. O(L log L)."""
+    return list(
+        session.exec(select(DeviceLink).order_by(DeviceLink.device_a_id, DeviceLink.device_b_id)).all()
+    )
 
 
 def add_link(session: Session, a: str, b: str) -> DeviceLink:
@@ -72,9 +98,23 @@ def add_link(session: Session, a: str, b: str) -> DeviceLink:
     device_a_id, device_b_id = check_link(parents, existing, a, b)
     link = DeviceLink(device_a_id=device_a_id, device_b_id=device_b_id)
     session.add(link)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # The same pair was stored between the check above and this commit.
+        session.rollback()
+        raise LinkConflict(f"'{a}' and '{b}' are already linked") from None
     session.refresh(link)
     return link
+
+
+def delete_link(session: Session, link_id: int) -> None:
+    """Delete one link by its id, or raise ``LinkNotFound``."""
+    link = session.get(DeviceLink, link_id)
+    if link is None:
+        raise LinkNotFound(link_id)
+    session.delete(link)
+    session.commit()
 
 
 def remove_links_of(session: Session, device_id: str) -> None:

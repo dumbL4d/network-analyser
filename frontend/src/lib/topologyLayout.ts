@@ -1,16 +1,21 @@
 import type { Edge, Node } from '@xyflow/react'
 
 import type { DeviceOut, DeviceStatus } from '@/types/device'
+import type { LinkOut } from '@/types/topology'
 
 export type DeviceNodeData = {
   device: DeviceOut
   status?: DeviceStatus
+  /** Set when the device is a single point of failure. */
+  blastRadius?: number
+  /** Set while a what-if is shown: why this device is predicted to be down. */
+  predicted?: 'failed' | 'cut off'
   [key: string]: unknown
 }
 
 export type DeviceNode = Node<DeviceNodeData, 'device'>
 
-// Fixed X-column per zone (deterministic manual layout for the 11-device tree).
+// Fixed X-column per zone (deterministic manual layout for the seeded topology).
 const ZONE_X: Record<string, number> = {
   edge: 0,
   'server-tier': 320,
@@ -18,6 +23,8 @@ const ZONE_X: Record<string, number> = {
 }
 
 const UNKNOWN_ZONE_X = 960
+// Extra links are dashed and blue, so they stand out from the grey tree edges.
+const LINK_COLOR = '#2563eb'
 const ROW_GAP_Y = 110
 
 const KNOWN_ZONES = Object.keys(ZONE_X)
@@ -30,8 +37,13 @@ function zoneColumn(zone: string, extraZones: string[]): number {
 /**
  * Deterministic layered layout: one vertical column per zone, devices stacked
  * in the order they appear in `devices`. No force-directed/dagre algorithm.
+ *
+ * Parent-child connections are solid edges. Extra links are dashed.
  */
-export function computeLayout(devices: DeviceOut[]): {
+export function computeLayout(
+  devices: DeviceOut[],
+  links: LinkOut[] = [],
+): {
   nodes: DeviceNode[]
   edges: Edge[]
 } {
@@ -71,5 +83,27 @@ export function computeLayout(devices: DeviceOut[]): {
       type: 'smoothstep',
     }))
 
-  return { nodes, edges }
+  // Like the tree edges, a link is drawn left to right (a node's handles are
+  // left = in, right = out), so the device in the column further left is the
+  // source. A link to a device that is not in `devices` is left out.
+  const columnOf = new Map(nodes.map((node) => [node.id, node.position.x]))
+  const linkEdges: Edge[] = links
+    .filter(
+      (link) =>
+        columnOf.has(link.device_a_id) && columnOf.has(link.device_b_id),
+    )
+    .map((link) => {
+      const leftToRight =
+        (columnOf.get(link.device_a_id) ?? 0) <=
+        (columnOf.get(link.device_b_id) ?? 0)
+      return {
+        id: `link-${link.id}`,
+        source: leftToRight ? link.device_a_id : link.device_b_id,
+        target: leftToRight ? link.device_b_id : link.device_a_id,
+        type: 'smoothstep',
+        style: { strokeDasharray: '6 4', stroke: LINK_COLOR, strokeWidth: 1.5 },
+      }
+    })
+
+  return { nodes, edges: [...edges, ...linkEdges] }
 }

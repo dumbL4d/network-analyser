@@ -15,11 +15,13 @@ from app.db.seed_settings import seed_default_settings
 from app.db.seed_users import seed_default_users
 from app.db.session import init_db
 from app.models.user import User
+from app.routers.analysis import router as analysis_router
 from app.routers.auth import router as auth_router
 from app.routers.devices import router as devices_router
 from app.routers.flaps import router as flaps_router
 from app.routers.history import router as history_router
 from app.routers.incidents import router as incidents_router
+from app.routers.links import router as links_router
 from app.routers.playbooks import router as playbooks_router
 from app.routers.settings import router as settings_router
 from app.routers.stats import router as stats_router
@@ -113,11 +115,13 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+app.include_router(analysis_router)
 app.include_router(auth_router)
 app.include_router(devices_router)
 app.include_router(flaps_router)
 app.include_router(history_router)
 app.include_router(incidents_router)
+app.include_router(links_router)
 app.include_router(playbooks_router)
 app.include_router(settings_router)
 app.include_router(stats_router)

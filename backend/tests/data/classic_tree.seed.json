@@ -1,0 +1,90 @@
+[
+  {
+    "id": "fw-01",
+    "name": "Edge Firewall",
+    "type": "firewall",
+    "ip": "10.99.0.1",
+    "zone": "edge",
+    "parentId": null
+  },
+  {
+    "id": "sw-edge",
+    "name": "Edge Switch",
+    "type": "switch",
+    "ip": "10.99.0.2",
+    "zone": "edge",
+    "parentId": "fw-01"
+  },
+  {
+    "id": "sw-server",
+    "name": "Server Tier Switch",
+    "type": "switch",
+    "ip": "10.99.0.3",
+    "zone": "server-tier",
+    "parentId": "sw-edge"
+  },
+  {
+    "id": "sw-ot",
+    "name": "OT Tier Switch",
+    "type": "switch",
+    "ip": "10.99.0.4",
+    "zone": "ot-tier",
+    "parentId": "sw-edge"
+  },
+  {
+    "id": "srv-prod-1",
+    "name": "Production Server 1",
+    "type": "server",
+    "ip": "10.99.0.10",
+    "zone": "server-tier",
+    "parentId": "sw-server"
+  },
+  {
+    "id": "srv-prod-2",
+    "name": "Production Server 2",
+    "type": "server",
+    "ip": "10.99.0.11",
+    "zone": "server-tier",
+    "parentId": "sw-server"
+  },
+  {
+    "id": "plc-conveyor-1",
+    "name": "Conveyor PLC 1",
+    "type": "plc",
+    "ip": "10.99.0.20",
+    "zone": "ot-tier",
+    "parentId": "sw-ot"
+  },
+  {
+    "id": "hmi-panel-1",
+    "name": "HMI Panel 1",
+    "type": "hmi",
+    "ip": "10.99.0.21",
+    "zone": "ot-tier",
+    "parentId": "sw-ot"
+  },
+  {
+    "id": "ap-aisle-1",
+    "name": "Aisle 1 Access Point",
+    "type": "ap",
+    "ip": "10.99.0.30",
+    "zone": "ot-tier",
+    "parentId": "sw-ot"
+  },
+  {
+    "id": "ap-aisle-2",
+    "name": "Aisle 2 Access Point",
+    "type": "ap",
+    "ip": "10.99.0.31",
+    "zone": "ot-tier",
+    "parentId": "sw-ot"
+  },
+  {
+    "id": "scanner-1",
+    "name": "Barcode Scanner 1",
+    "type": "scanner",
+    "ip": "10.99.0.40",
+    "zone": "ot-tier",
+    "parentId": "sw-ot"
+  }
+]

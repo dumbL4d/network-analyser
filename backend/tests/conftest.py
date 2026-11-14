@@ -18,7 +18,12 @@ from pathlib import Path
 
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="network-analyser-tests-"))
 TEST_DB_PATH = _TMP_DIR / "test.db"
-SEED_FILE = Path(__file__).resolve().parents[2] / "infra" / "devices.seed.json"
+# The suite runs on a frozen copy of the original 11-device tree (no extra
+# links), so tests about the monitoring logic do not change whenever the
+# shipped topology does. Tests about the shipped topology itself load
+# REAL_SEED_FILE (see test_seed_topology.py).
+SEED_FILE = Path(__file__).resolve().parent / "data" / "classic_tree.seed.json"
+REAL_SEED_FILE = Path(__file__).resolve().parents[2] / "infra" / "devices.seed.json"
 
 os.environ.update(
     {

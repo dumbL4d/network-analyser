@@ -57,8 +57,9 @@ from app.models.device import Device
 from app.models.device_link import DeviceLink
 from app.schemas.device import DeviceDTO
 from app.schemas.incident import IncidentOut
+from app.services.device_links import device_graph
 from app.services.ping_engine import DeviceStatus
-from app.services.topology_graph import DisjointSet, build_graph, reachable_from_roots
+from app.services.topology_graph import DisjointSet, reachable_from_roots
 
 UNHEALTHY = {"down", "degraded"}
 
@@ -161,10 +162,7 @@ def _analyze_with_links(
     unhealthy devices (the sorting). Space O(V + E).
     """
     by_id = {device.id: device for device in devices}
-    graph = build_graph(
-        {device.id: device.parent_id for device in devices},
-        [(link.device_a_id, link.device_b_id) for link in links],
-    )
+    graph = device_graph(devices, links)
     unhealthy = {
         device.id for device in devices if _status_of(device.id, statuses) in UNHEALTHY
     }

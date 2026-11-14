@@ -1,8 +1,8 @@
 # This simulates a small warehouse network topology for local development in the
-# absence of real hardware. The 11 `sim-*` containers are ICMP-pingable Alpine
-# stubs arranged in a tree (see infra/devices.seed.json for topology). The real
-# backend service will ping these by their static IPs on the warehouse-net bridge
-# network.
+# absence of real hardware. The 12 `sim-*` containers are ICMP-pingable Alpine
+# stubs arranged in a tree with two redundant links (see infra/devices.seed.json
+# for the topology). The real backend service will ping these by their static
+# IPs on the warehouse-net bridge network.
 
 networks:
   warehouse-net:
@@ -29,6 +29,17 @@ services:
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.2
+
+  # Second edge switch: with the extra links sw-server <-> sw-edge-2 and
+  # sw-ot <-> sw-edge-2 (infra/devices.seed.json) it gives both tier switches a
+  # way to the firewall that does not pass through sim-sw-edge.
+  sim-sw-edge-2:
+    image: alpine:3.20
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      warehouse-net:
+        ipv4_address: 10.99.0.5
 
   sim-sw-server:
     image: alpine:3.20
@@ -117,8 +128,8 @@ services:
     # rebuilds). The image pre-creates /app/data so a volume-less run also works.
     volumes:
       - backend-data:/app/data
-      # Read-only reference topology. On a fresh DB the backend seeds the 11
-      # sim-* devices from here (seed.py resolves /app/infra/devices.seed.json
+      # Read-only reference topology. The backend seeds the 12 sim-* devices
+      # and their extra links from here (seed.py resolves /app/infra/devices.seed.json
       # as the repo-layout path); swap in real device IPs here per deployment.
       - ../infra/devices.seed.json:/app/infra/devices.seed.json:ro
     networks:

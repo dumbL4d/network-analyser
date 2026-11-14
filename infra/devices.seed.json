@@ -16,6 +16,15 @@
     "parentId": "fw-01"
   },
   {
+    "id": "sw-edge-2",
+    "name": "Edge Switch 2",
+    "type": "switch",
+    "ip": "10.99.0.5",
+    "zone": "edge",
+    "parentId": "fw-01",
+    "links": ["sw-server", "sw-ot"]
+  },
+  {
     "id": "sw-server",
     "name": "Server Tier Switch",
     "type": "switch",

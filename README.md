@@ -32,6 +32,9 @@ entire warehouse LAN so the whole system runs on one machine.
   joined by extra links (a second uplink, a ring). A hand-written graph engine
   finds every single point of failure and the blast radius of each device, and
   incident analysis then follows reachability instead of the parent alone.
+- **What-if simulator** — pick devices to fail and see on the topology what
+  would be cut off and which incidents would be raised, without touching the
+  live network.
 - **Incident lifecycle** — every root cause becomes a stored incident that is
   opened, optionally acknowledged, and resolved automatically, with a timeline,
   detection delay, MTTR and per-device availability.
@@ -40,7 +43,7 @@ entire warehouse LAN so the whole system runs on one machine.
 - **Role-based access** — JWT login with `admin` / `viewer` roles; device CRUD,
   user management, monitoring settings, and users' password changes all live
   behind the appropriate role check.
-- **Simulated hardware** — Docker Compose brings up 11 Alpine containers that
+- **Simulated hardware** — Docker Compose brings up 12 Alpine containers that
   stand in for firewall/switch/PLC/HMI/AP/scanner hardware, so the entire
   lifecycle (dev, demo, testing) works without touching real devices.
 
@@ -73,7 +76,7 @@ flowchart LR
     end
 
     subgraph SimNet["warehouse-net (10.99.0.0/24)"]
-        SIM["11 × sim-* containers<br/>(Alpine ICMP stubs)"]
+        SIM["12 × sim-* containers<br/>(Alpine ICMP stubs)"]
     end
 
     UI -- "browser calls :8000 directly" --> API
@@ -82,6 +85,7 @@ flowchart LR
     API --> HS
     API --> FS
     API --> IA
+    API -- "SPOF + what-if" --> TG
     IA --> ST
     IA -- "devices + links" --> TG
     SSE --> ST
@@ -118,12 +122,14 @@ user's browser straight to the backend.
 │   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth deps
 │   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
 │   │   ├── models/          Device, DeviceLink, User, AppSettings, the history tables and incidents (SQLModel)
-│   │   ├── routers/         auth, devices, settings, users, history, flaps, incidents, stats, playbooks
+│   │   ├── routers/         auth, devices, links, settings, users, history, flaps, incidents, stats,
+│   │   │                    analysis (SPOF, what-if), playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
 │   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis,
 │   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention,
 │   │   │                    incident_tracker (incident lifecycle), incident_stats (MTTR, availability),
-│   │   │                    topology_graph (graph algorithms), device_links (rules for extra links)
+│   │   │                    topology_graph (graph algorithms), device_links (rules for extra links),
+│   │   │                    topology_analysis (SPOF report, what-if)
 │   │   └── data/playbooks.py  Static guided-fix playbook content
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
@@ -133,12 +139,13 @@ user's browser straight to the backend.
 │   │   ├── components/      Views: Topology, DeviceDetail, Metrics, Stability, Incidents, Admin, Login
 │   │   ├── contexts/        AuthContext (JWT state)
 │   │   ├── hooks/           useStatusStream (SSE), useDevices, useHistory, useFlapCounts, useIncidents,
-│   │   │                    useIncidentRecords, useAvailability, usePolled (shared polling)
+│   │   │                    useIncidentRecords, useAvailability, useTopology (links, SPOFs),
+│   │   │                    usePolled (shared polling)
 │   │   └── lib/             api client (fetch + SSE), topology layout, metrics helpers
 │   └── Dockerfile           Multi-stage: node build → nginx static server
 ├── infra/
-│   ├── docker-compose.yml   Full stack: 11 sim devices + backend + frontend
-│   ├── devices.seed.json    Seeded device tree (the warehouse topology)
+│   ├── docker-compose.yml   Full stack: 12 sim devices + backend + frontend
+│   ├── devices.seed.json    Seeded devices and extra links (the warehouse topology)
 │   └── README.md            Deployment runbook
 └── docs/                    (empty; reserved for further docs)
 ```
@@ -414,6 +421,9 @@ hour ago is not credited with a full day of uptime.
 | `POST`   | `/api/devices`                    | **admin**   | Create device (parent/cycle validation)        |
 | `PATCH`  | `/api/devices/{id}`               | **admin**   | Update device                                  |
 | `DELETE` | `/api/devices/{id}`               | **admin**   | Delete device (blocked if it has children)     |
+| `GET`    | `/api/links`                      | user        | Extra links between devices                   |
+| `POST`   | `/api/links`                      | **admin**   | Link two devices (validated)                  |
+| `DELETE` | `/api/links/{id}`                 | **admin**   | Delete a link                                 |
 | `GET`    | `/api/history/{id}`               | user        | Latency history; `?window=` for longer ranges |
 | `GET`    | `/api/flaps`                      | user        | Flap counts (last 30 days), highest first     |
 | `GET`    | `/api/incidents`                  | user        | Live root-cause/collateral incident set       |
@@ -423,6 +433,8 @@ hour ago is not credited with a full day of uptime.
 | `POST`   | `/api/incidents/{id}/notes`       | **admin**   | Add a note to an incident's timeline          |
 | `GET`    | `/api/stats/incidents`            | user        | Detection delay, MTTR and alerts suppressed   |
 | `GET`    | `/api/stats/availability?window=` | user        | Per-device uptime over 24h, 7d or 30d         |
+| `GET`    | `/api/analysis/spof`              | user        | Single points of failure, with blast radius   |
+| `POST`   | `/api/analysis/what-if`           | user        | Predicted incidents if given devices failed   |
 | `GET`    | `/api/playbooks/{type}/{state}`   | user        | Guided-fix playbook for a device type/state    |
 | `GET`    | `/api/settings`                   | user        | Monitoring settings (poll interval, thresholds)|
 | `PATCH`  | `/api/settings`                   | **admin**   | Update monitoring settings                     |
@@ -439,6 +451,19 @@ hour ago is not credited with a full day of uptime.
 (1–200, default 50) and `offset`, and returns `{total, limit, offset, items}`.
 `POST /api/incidents/{id}/notes` takes `{"text": "..."}` (1–2000 characters).
 Acknowledging an incident that is not open returns 409.
+
+`POST /api/links` takes `{"device_a_id": "...", "device_b_id": "..."}`, in
+either order, and answers 201 with `{id, device_a_id, device_b_id}` (smaller
+id first). A device linked to itself or an unknown device is a 422; two
+devices that are connected already are a 409. Deleting a device also deletes
+its links.
+
+`GET /api/analysis/spof` returns `[{device_id, blast_radius,
+cut_off_device_ids}]`, largest blast radius first.
+`POST /api/analysis/what-if` takes `{"failed_device_ids": [...]}` and returns
+`{incidents, unreachable_device_ids, total_blast_radius}`, where `incidents`
+has the shape of `GET /api/incidents`. It only calculates: nothing is stored
+and the live status is not touched. An unknown device id is a 422.
 
 ## Algorithms
 
@@ -518,14 +543,21 @@ checks all four when a link is added. Deleting a device deletes its links,
 and moving a device under a device it was linked to removes that link,
 because the connection is now the tree edge.
 
-There is no API endpoint for links yet. To add one from the command line,
-after the backend has started once with this version (that creates the
-table):
+Links are managed in the Admin panel (Links tab) or through `/api/links`.
+They can also be seeded: a device in `infra/devices.seed.json` may carry
+`"links"`, the ids of the devices it is linked to besides its parent.
+Seeding runs at every start and is idempotent: a seeded device or link that
+is missing is added, and nothing is duplicated or overwritten.
 
-```sh
-cd backend && source .venv/bin/activate
-python -c "from sqlmodel import Session; from app.db.session import engine; from app.services.device_links import add_link; print(add_link(Session(engine), 'plc-conveyor-1', 'sw-server'))"
-```
+Two endpoints expose the engine:
+
+- `GET /api/analysis/spof` lists the single points of failure, each with its
+  blast radius and the devices it would cut off.
+- `POST /api/analysis/what-if` answers "what if these devices failed?". The
+  failed devices, and everything they cut off, are treated as down in an
+  otherwise healthy network, and that snapshot goes through the normal
+  incident analysis. The total blast radius is the number of devices cut
+  off.
 
 ## Frontend (React)
 
@@ -542,29 +574,38 @@ flowchart LR
     end
 
     subgraph Views["Authenticated views"]
-        T["/ — TopologyView<br/>(@xyflow/react graph of the device tree)"]
+        T["/ — TopologyView<br/>(@xyflow/react graph: parent links, dashed extra links,<br/>SPOF badges, What-if panel)"]
         D["/devices/:id — DeviceDetailView<br/>(latency chart with time range + status)"]
         M["/metrics — MetricsView<br/>(Latency with time range & Status Overview tabs, recharts)"]
         S["/stability — StabilityView<br/>(flap-count bar ranking + availability table)"]
         I["/incidents — IncidentView<br/>(summary cards, Active and History tabs, playbook stepper)"]
         IDV["/incidents/:id — IncidentDetailView<br/>(event timeline, plus acknowledge and notes for admins)"]
-        A["/admin — AdminPanel<br/>(Devices / Settings / Users tabs)"]
+        A["/admin — AdminPanel<br/>(Devices / Links / Settings / Users tabs)"]
         C["/account — AccountPage<br/>(change password)"]
     end
 
     T -. SSE .-> STREAM["/api/stream/status (EventSource + token)"]
+    T -. "/api/links + /api/analysis/spof + what-if" .-> REST
     M -. SSE + /api/history .-> STREAM
     D -. /api/history .-> REST["Other /api /* REST calls"]
     S -. "/api/flaps + /api/settings + /api/stats/availability" .-> REST
     I -. "/api/incidents + /history (poll 10 s) + /api/stats/incidents" .-> REST
     IDV -. "/api/incidents/:id (poll 10 s)" .-> REST
-    A -. /api/devices /settings /users .-> REST
+    A -. "/api/devices /links /settings /users" .-> REST
 ```
 
 The live status path is **push** (SSE), while everything else is **pull**
 (REST polling): live and stored incidents re-poll every 10 s, incident
 statistics every 30 s, availability every minute, flap counts/settings on
 mount, and history per device view.
+
+The Topology page draws parent links in grey and extra links as blue dashed
+lines, and marks every single point of failure with a `SPOF n` badge, n being
+its blast radius. Its What-if panel lists the devices: tick the ones to fail,
+press Simulate, and the graph shows the predicted statuses (`failed`,
+`cut off`) next to the predicted root causes and the total blast radius. Reset
+returns to the live view. The Admin panel has a Links tab to list, add and
+delete extra links; a rejected link shows the backend's reason.
 
 The Incidents page has four summary cards (incidents recorded, mean detection
 delay, MTTR, alerts suppressed) above two tabs. **Active** is the live
@@ -583,14 +624,15 @@ is shown under the chart.
 
 ## Simulated network topology
 
-The seeded device tree (`infra/devices.seed.json`) models a small warehouse
-LAN: an edge firewall fronts a server tier and an OT tier (PLCs, HMIs, access
-points, scanners).
+The seeded topology (`infra/devices.seed.json`) models a small warehouse LAN:
+an edge firewall, two edge switches, a server tier and an OT tier (PLCs,
+HMIs, access points, scanners). Twelve devices and two extra links.
 
 ```mermaid
 flowchart TD
     FW["fw-01 · Edge Firewall<br/>10.99.0.1 · edge"]
     SWE["sw-edge · Edge Switch<br/>10.99.0.2 · edge"]
+    SWE2["sw-edge-2 · Edge Switch 2<br/>10.99.0.5 · edge"]
     SWS["sw-server · Server Tier Switch<br/>10.99.0.3 · server-tier"]
     SRV1["srv-prod-1 · Production Server 1<br/>10.99.0.10 · server-tier"]
     SRV2["srv-prod-2 · Production Server 2<br/>10.99.0.11 · server-tier"]
@@ -602,8 +644,11 @@ flowchart TD
     SCN["scanner-1 · Barcode Scanner 1<br/>10.99.0.40 · ot-tier"]
 
     FW --> SWE
+    FW --> SWE2
     SWE --> SWS
     SWE --> SWO
+    SWE2 -. "extra link" .- SWS
+    SWE2 -. "extra link" .- SWO
     SWS --> SRV1
     SWS --> SRV2
     SWO --> PLC
@@ -613,9 +658,16 @@ flowchart TD
     SWO --> SCN
 ```
 
-This hierarchy is exactly what the incident analysis walks: if `sw-ot` goes
-down, all five OT devices under it come back as **collateral** of a single
-root cause instead of five separate alarms.
+Solid arrows are parent links and dashed lines are extra links. Both tier
+switches are dual-homed: each reaches the firewall through `sw-edge` or
+through `sw-edge-2`, so losing one edge switch cuts nothing off. The single
+points of failure that remain are `fw-01` (blast radius 11), `sw-ot` (5) and
+`sw-server` (2).
+
+This graph is what the incident analysis works on: if `sw-ot` goes down, all
+five OT devices under it come back as **collateral** of a single root cause
+instead of five separate alarms. If `sw-edge` goes down, it is a root cause
+with nothing behind it.
 
 ## Deployment (Docker Compose)
 
@@ -628,6 +680,7 @@ flowchart LR
     subgraph warehouse-net["warehouse-net · 10.99.0.0/24"]
         FW["sim-fw-01 · 10.99.0.1"]
         S1["sim-sw-edge · .2"]
+        S11["sim-sw-edge-2 · .5"]
         S2["sim-sw-server · .3"]
         S3["sim-sw-ot · .4"]
         S4["sim-srv-prod-1 · .10"]
@@ -643,7 +696,7 @@ flowchart LR
     BR["Browser"]
     FE["frontend (nginx) · :8080<br/>no network — serves static bundle"]
 
-    BE -- "ICMP probes (all 11 sim-* stubs)" --> FW
+    BE -- "ICMP probes (all 12 sim-* stubs)" --> FW
     BE -- "ICMP" --> S2
     BE -- "ICMP" --> S3
     BE -- "ICMP" --> S6
@@ -653,7 +706,7 @@ flowchart LR
     FE -.->|"no direct traffic<br/>(out-of-band)"| BE
 ```
 
-- **11 `sim-*` containers** — Alpine stubs that answer ICMP, standing in for
+- **12 `sim-*` containers** — Alpine stubs that answer ICMP, standing in for
   warehouse hardware.
 - **`backend`** — FastAPI + SQLite; needs `CAP_NET_RAW` for raw ICMP sockets,
   publishes `:8000`, persists the DB in the `backend-data` named volume, and
@@ -661,7 +714,7 @@ flowchart LR
 - **`frontend`** — nginx serving the built SPA on `:8080`. It is deliberately
   not on `warehouse-net`: it never talks to the backend itself (the browser
   does), so attaching it adds nothing.
-- **13 containers total** when running (11 sims + backend + frontend).
+- **14 containers total** when running (12 sims + backend + frontend).
 
 Persisted SQLite data (settings, users, devices, latency history and status
 transitions) survives `down`/`up` and rebuilds via the `backend-data` volume,
@@ -708,10 +761,10 @@ npm run dev            # Vite dev server on :5173
 
 ### Without real hardware
 
-Run the 11 simulated devices from `infra/docker-compose.yml`:
+Run the 12 simulated devices from `infra/docker-compose.yml`:
 
 ```sh
-docker compose -f infra/docker-compose.yml up -d sim-fw-01 sim-sw-edge sim-sw-server sim-sw-ot \
+docker compose -f infra/docker-compose.yml up -d sim-fw-01 sim-sw-edge sim-sw-edge-2 sim-sw-server sim-sw-ot \
   sim-srv-prod-1 sim-srv-prod-2 sim-plc-conveyor-1 sim-hmi-panel-1 sim-ap-aisle-1 sim-ap-aisle-2 sim-scanner-1
 docker compose -f infra/docker-compose.yml down   # or the whole stack
 ```
@@ -801,8 +854,8 @@ Docker deployment):
 | `RETENTION_INTERVAL_SECONDS` | `3600`  | How often the retention job runs                                     |
 | `HISTORY_MAX_SAMPLES`        | `36`    | Recent samples per device kept in memory                             |
 
-With the defaults and 11 devices polled every 10 s, the database settles at
-roughly 95,000 raw rows and 475,000 rollup rows.
+With the defaults and 12 devices polled every 10 s, the database settles at
+roughly 104,000 raw rows and 518,000 rollup rows.
 
 ### Reading history
 
@@ -924,6 +977,12 @@ These are characterization tests: they pin what the code does today, so a
 later change in behaviour shows up as a failing test. A test marked `xfail`
 records a known bug that has deliberately not been fixed yet; pytest lists each
 one with its reason at the end of the run.
+
+The suite is seeded with a frozen copy of the original 11-device tree
+(`backend/tests/data/classic_tree.seed.json`), so tests of the monitoring
+logic do not change when the shipped topology does. `test_seed_topology.py`
+checks the shipped seed file, the compose file that simulates it, and link
+seeding.
 
 The graph algorithms are also checked on seeded random graphs against slow,
 obvious implementations (see [Algorithms](#algorithms)). A failing case prints

@@ -42,7 +42,7 @@ together on one bridge network (`warehouse-net`).
 docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-This brings up **13 containers**: 11 `sim-*` Alpine stubs standing in for
+This brings up **14 containers**: 12 `sim-*` Alpine stubs standing in for
 warehouse hardware, the backend (FastAPI + SQLite on port 8000), and the
 frontend (nginx static SPA on port 8080).
 
@@ -87,10 +87,34 @@ defaults on next start). Never use it casually.
 
 ## The simulated network
 
-The 11 `sim-*` containers are ICMP-pingable Alpine stubs arranged in the
-topology described in `infra/devices.seed.json` (firewall at `10.99.0.1`,
-switches, PLCs, HMIs, access points, scanners on `10.99.0.0/24`). The backend
-pings them over ICMP (`CAP_NET_RAW`) on the shared `warehouse-net`.
+The 12 `sim-*` containers are ICMP-pingable Alpine stubs arranged in the
+topology described in `infra/devices.seed.json` (firewall at `10.99.0.1`, two
+edge switches, tier switches, PLCs, HMIs, access points, scanners on
+`10.99.0.0/24`). The backend pings them over ICMP (`CAP_NET_RAW`) on the
+shared `warehouse-net`.
+
+The topology is redundant: `sw-edge-2` (`10.99.0.5`) hangs under the firewall
+next to `sw-edge` and is linked to both tier switches, so either edge switch
+can fail without cutting anything off.
+
+The stubs do not really depend on each other: each container answers pings by
+itself, so stopping a switch does not take the devices behind it down. To see
+what a failure WOULD cut off, use the What-if panel on the Topology page. What
+the stubs can show is how the redundancy changes the incident analysis. Wait
+about 30 s after each step (three polls confirm a failure):
+
+```sh
+# sw-ot is still reachable through sw-edge-2, so its failure is its own:
+docker compose -f infra/docker-compose.yml stop sim-sw-edge sim-sw-ot   # two root causes
+# with both edge switches gone, nothing leads to sw-ot any more:
+docker compose -f infra/docker-compose.yml stop sim-sw-edge-2           # sw-ot becomes collateral
+docker compose -f infra/docker-compose.yml start sim-sw-edge sim-sw-edge-2 sim-sw-ot
+```
+
+In the seed file a device may carry `"links"`: the ids of devices it is
+connected to in addition to its parent. Seeding runs at every start and only
+adds what is missing, so an existing installation gains `sw-edge-2` and its
+two links on its next restart.
 
 When real hardware is ready, replace the device definitions in
 `infra/devices.seed.json` (and, if needed, the sim services here) with the real
