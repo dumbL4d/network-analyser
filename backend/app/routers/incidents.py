@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from app.core.deps import get_current_user, require_role
 from app.db.session import get_session
 from app.models.device import Device
+from app.models.device_link import DeviceLink
 from app.models.user import User
 from app.schemas.incident import (
     IncidentDetailOut,
@@ -56,7 +57,8 @@ def list_live_incidents(
     recovering or a switch failing reclassifies incidents immediately.
     """
     devices = session.exec(select(Device)).all()
-    return analyze_incidents(devices, status_store.get_all())
+    links = session.exec(select(DeviceLink)).all()
+    return analyze_incidents(devices, status_store.get_all(), links)
 
 
 # Declared before "/{incident_id}" so that "history" is not read as an id.

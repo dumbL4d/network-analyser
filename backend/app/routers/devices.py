@@ -4,6 +4,10 @@ The two GET endpoints are viewer- AND admin-readable (unchanged from Ticket
 2.1). POST / PATCH / DELETE are protected by ``require_role("admin")`` and are
 where parent-reference sanity checks live (parent must exist, no self-paren, no
 circular references, no deleting a device that still has children).
+
+They also keep the extra links (``device_link``) consistent: deleting a device
+deletes its links, and moving a device under one it was linked to removes that
+link, because the tree edge now is that connection.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +18,7 @@ from app.db.session import get_session
 from app.models.device import Device
 from app.models.user import User
 from app.schemas.device import DeviceCreate, DeviceDTO, DeviceUpdate
+from app.services.device_links import remove_link_between, remove_links_of
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -124,6 +129,8 @@ def update_device(
 
     if "parent_id" in updates:
         _assert_valid_parent(device_id, updates["parent_id"], session)
+        # An extra link to the new parent would now duplicate the tree edge.
+        remove_link_between(session, device_id, updates["parent_id"])
 
     for field, value in updates.items():
         setattr(device, field, value)
@@ -155,5 +162,6 @@ def delete_device(
             ),
         )
 
+    remove_links_of(session, device_id)  # a link must join two existing devices
     session.delete(device)
     session.commit()

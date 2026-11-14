@@ -28,6 +28,10 @@ entire warehouse LAN so the whole system runs on one machine.
   (firewall → switches → PLCs/HMIs/servers). An unhealthy device whose parent
   is also unhealthy is marked **collateral**; one whose parent is healthy is a
   **root cause** with the list of downstream devices it took down.
+- **Redundancy-aware topology** — besides the parent tree, devices can be
+  joined by extra links (a second uplink, a ring). A hand-written graph engine
+  finds every single point of failure and the blast radius of each device, and
+  incident analysis then follows reachability instead of the parent alone.
 - **Incident lifecycle** — every root cause becomes a stored incident that is
   opened, optionally acknowledged, and resolved automatically, with a timeline,
   detection delay, MTTR and per-device availability.
@@ -62,6 +66,7 @@ flowchart LR
         HS["HistoryStore<br/>(recent samples, hot cache)"]
         FS["FlapStore<br/>(status changes, hot cache)"]
         IA["IncidentAnalysis<br/>(root cause vs collateral)"]
+        TG["TopologyGraph<br/>(pure graph algorithms)"]
         TRK["IncidentTracker<br/>(open / update / resolve)"]
         RET["Retention job<br/>(hourly rollup + cleanup)"]
         DB[("SQLite<br/>backend-data volume")]
@@ -78,6 +83,7 @@ flowchart LR
     API --> FS
     API --> IA
     IA --> ST
+    IA -- "devices + links" --> TG
     SSE --> ST
     POLL --> DB
     POLL --> PING
@@ -111,12 +117,13 @@ user's browser straight to the backend.
 │   │   ├── main.py          App factory, lifespan (migrate, seed, warm-up, background tasks), SSE endpoint
 │   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth deps
 │   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
-│   │   ├── models/          Device, User, AppSettings, the history tables and incidents (SQLModel)
+│   │   ├── models/          Device, DeviceLink, User, AppSettings, the history tables and incidents (SQLModel)
 │   │   ├── routers/         auth, devices, settings, users, history, flaps, incidents, stats, playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
 │   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis,
 │   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention,
-│   │   │                    incident_tracker (incident lifecycle), incident_stats (MTTR, availability)
+│   │   │                    incident_tracker (incident lifecycle), incident_stats (MTTR, availability),
+│   │   │                    topology_graph (graph algorithms), device_links (rules for extra links)
 │   │   └── data/playbooks.py  Static guided-fix playbook content
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
@@ -285,6 +292,41 @@ Each root cause carries the list of `downstream_affected` devices it took down,
 and the frontend renders these as incident cards with a guided-fix playbook
 stepper linked from the static `backend/app/data/playbooks.py`.
 
+#### With redundant links
+
+The rule above looks only at a device's parent. That is right for a tree,
+where the parent is the only way up. Once the topology has extra links (see
+[Redundant links](#redundant-links)), a device can have a second way up, so
+the analysis switches to **reachability**. With no links stored it uses the
+tree rule exactly as before.
+
+```mermaid
+flowchart TD
+    S["Live status snapshot + device graph<br/>(tree edges and extra links)"] --> B["Search from the roots,<br/>passing through healthy devices only"]
+    B --> U{"Device unhealthy?<br/>(down or degraded)"}
+    U -- No --> SKIP["Skip"]
+    U -- Yes --> R{"Did the search reach it?"}
+    R -- "Yes: a path of healthy devices leads to it" --> RC["ROOT CAUSE<br/>(the fault is its own)"]
+    R -- "No: every way to it is blocked" --> COL["COLLATERAL"]
+    COL --> REG["Listed under every root cause<br/>of its failure region"]
+```
+
+- A device is **reachable** when a path leads to it from a root (a device with
+  no parent) on which every device in between is healthy. `unknown` counts as
+  healthy here: a missing measurement is not a failure.
+- An unhealthy device that is reachable is a **root cause**. One that is not
+  is **collateral**.
+- A **failure region** is a group of unhealthy devices joined to each other.
+  A collateral device is listed in the `downstream_affected` of every root
+  cause in its region. That list holds collateral devices only.
+
+Example: a PLC with two uplinks, `s1` (its parent) and `s2` (an extra link).
+
+| What is down        | Tree only                 | With the link                              |
+| ------------------- | ------------------------- | ------------------------------------------ |
+| `s1` and the PLC    | PLC is collateral of `s1` | PLC is a root cause: `s2` still reaches it |
+| `s1`, `s2`, the PLC | PLC is collateral of `s1` | PLC is collateral of both `s1` and `s2`    |
+
 ### Incident lifecycle
 
 The analysis above is stateless: it answers "what is wrong right now?" and
@@ -397,6 +439,93 @@ hour ago is not credited with a full day of uptime.
 (1–200, default 50) and `offset`, and returns `{total, limit, offset, items}`.
 `POST /api/incidents/{id}/notes` takes `{"text": "..."}` (1–2000 characters).
 Acknowledging an incident that is not open returns 409.
+
+## Algorithms
+
+The topology is treated as a graph, and every graph algorithm is written by
+hand in `backend/app/services/topology_graph.py`: no graph library, no
+database access, and no recursion. Each traversal keeps its own stack or
+queue, so a very deep network cannot hit Python's recursion limit.
+
+- A **vertex** is a device.
+- An **edge** is undirected: the connection between a device and its parent,
+  or an extra link (see [Redundant links](#redundant-links)).
+- A **root** is a device with no parent. The monitor reaches the network
+  through the roots, so "can reach a root" means "is reachable".
+- Where an algorithm needs one starting point, it adds a virtual
+  **super-root** joined to every root.
+
+In the table V is the number of devices and E the number of edges.
+
+| Algorithm                            | Function                                    | Purpose                                                                         | Time              |
+| ------------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------- | ----------------- |
+| Adjacency builder                    | `build_graph`                               | Turns devices and links into adjacency lists and the list of roots              | O(V + E)          |
+| Breadth-first search                 | `reachable_from_roots`                      | Devices reachable from a root through healthy devices: root cause or collateral | O(V + E)          |
+| Tarjan's low-link search (iterative) | `low_link_search`                           | One depth-first search giving every device a discovery number and a low-link    | O(V + E)          |
+| Articulation points and bridges      | `articulation_points_and_bridges`           | Devices and connections whose loss splits the network                           | O(V + E)          |
+| Blast radius                         | `blast_radius`, `single_points_of_failure`  | For every device, how many others lose every root if it fails                   | O(V + E)          |
+| Union-find (DSU)                     | `DisjointSet`, `cut_off`, `component_count` | What is cut off when several devices fail together; failure regions             | O((V + E) · α(V)) |
+| Brute force                          | `blast_radius_bruteforce`                   | Removes each device in turn and searches again; the reference for the tests     | O(V · (V + E))    |
+
+α is the inverse Ackermann function. It is at most 4 for any realistic V, so
+union-find is linear in practice.
+
+**Low-link values.** The depth-first search numbers the devices in the order
+it discovers them. The low-link of a device is the smallest number that can
+be reached from it by going down the search tree and then along at most one
+other edge. For a tree edge from `p` down to `c`:
+
+- `low[c] >= discovery[p]`: nothing below the edge reaches higher than `p`,
+  so removing `p` cuts that part off. `p` is an articulation point.
+- `low[c] > discovery[p]`: nothing below reaches even `p` except through this
+  edge, so the edge is a bridge.
+
+**Blast radius.** The blast radius of a device is the number of other devices
+that can no longer reach any root when it is removed. With the super-root on
+top, one search covers every device: the blast radius of `p` is the sum of
+the subtree sizes of its children `c` with `low[c] >= discovery[p]`. A device
+with a blast radius above 0 is a **single point of failure** (SPOF).
+
+A SPOF is not the same as an articulation point. A root with one chain below
+it is a SPOF (everything depends on it) but not an articulation point. A
+device that only joins two roots is an articulation point (the graph splits)
+but not a SPOF (both halves keep a root).
+
+**Several failures at once.** Low-link values describe the loss of one device
+only. `cut_off(graph, failed)` answers the question for any set of failed
+devices by rebuilding connectivity with union-find.
+
+**How they are tested.** Hand-built graphs (path, star, cycle, two cycles
+sharing a node, disconnected graph, several roots, dual-homed device), and
+seeded random graphs: 600 trees and 1,500 graphs per property, on which the
+fast algorithms must give the same answers as the brute force. A chain of
+20,000 devices shows that nothing recurses.
+
+### Redundant links
+
+The parent tree gives every device one uplink. The `device_link` table adds
+extra, undirected connections: a second uplink, a ring, a cross-link. A link
+is stored once, with its two device ids in alphabetical order, and must obey
+four rules:
+
+1. a device is not linked to itself;
+2. both devices exist;
+3. the two are not already parent and child;
+4. the pair is not already linked, in either order.
+
+Rules 1 and 4 are database constraints. `backend/app/services/device_links.py`
+checks all four when a link is added. Deleting a device deletes its links,
+and moving a device under a device it was linked to removes that link,
+because the connection is now the tree edge.
+
+There is no API endpoint for links yet. To add one from the command line,
+after the backend has started once with this version (that creates the
+table):
+
+```sh
+cd backend && source .venv/bin/activate
+python -c "from sqlmodel import Session; from app.db.session import engine; from app.services.device_links import add_link; print(add_link(Session(engine), 'plc-conveyor-1', 'sw-server'))"
+```
 
 ## Frontend (React)
 
@@ -610,15 +739,19 @@ flap counts survive a backend restart.
   `affected_device_ids` (the downstream devices, stored as JSON).
 - **`incident_event`**: an incident's timeline, one row per event. Columns:
   `incident_id`, `ts`, `type`, `details` (JSON).
+- **`device_link`**: one row per extra link between two devices (see
+  "Redundant links"). Columns: `device_a_id`, `device_b_id`, with
+  `device_a_id < device_b_id`.
 
 `latency_sample` and `status_transition` are indexed on `(device_id, ts)`, and
 `latency_rollup_1m` is unique on `(device_id, bucket_start)`. `incident` has a
 partial unique index that allows one unresolved incident per root device. All
 timestamps are UTC. In a rollup, `min` / `avg` / `max` cover the polls that
-got a reply and `fail_count` is the number that did not. None of these tables
-references `device`, so the history of a deleted device simply ages out.
-Incidents are the exception to ageing out: there are few of them, so they are
-kept until the database is deleted.
+got a reply and `fail_count` is the number that did not. The history and
+incident tables do not reference `device`, so the history of a deleted device
+simply ages out. Incidents are the exception to ageing out: there are few of
+them, so they are kept until the database is deleted. `device_link` is
+different: a link is deleted together with either of its two devices.
 
 ### Data lifecycle
 
@@ -736,6 +869,7 @@ its data.
 - `0003` adds the history tables: `latency_sample`, `latency_rollup_1m` and
   `status_transition`.
 - `0004` adds the incident tables: `incident` and `incident_event`.
+- `0005` adds `device_link`, the extra links between devices.
 
 Every change to a model in `backend/app/models/` needs a migration:
 
@@ -744,7 +878,7 @@ cd backend
 source .venv/bin/activate
 alembic upgrade head      # bring your local database up to date first
 # ...edit the model...
-alembic revision --autogenerate --rev-id 0005 -m "describe the change"
+alembic revision --autogenerate --rev-id 0006 -m "describe the change"
 # review the new file in app/db/migrations/versions/, then:
 alembic upgrade head      # or simply start the backend
 pytest                    # test_migrations.py fails if a model has no migration
@@ -790,6 +924,10 @@ These are characterization tests: they pin what the code does today, so a
 later change in behaviour shows up as a failing test. A test marked `xfail`
 records a known bug that has deliberately not been fixed yet; pytest lists each
 one with its reason at the end of the run.
+
+The graph algorithms are also checked on seeded random graphs against slow,
+obvious implementations (see [Algorithms](#algorithms)). A failing case prints
+its seed, so it can be reproduced.
 
 Frontend checks:
 

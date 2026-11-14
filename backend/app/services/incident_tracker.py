@@ -30,6 +30,7 @@ from sqlmodel import Session, select
 
 from app.db.session import engine
 from app.models.device import Device
+from app.models.device_link import DeviceLink
 from app.models.incident import Incident, IncidentEvent
 from app.schemas.incident import IncidentOut
 from app.services.incident_analysis import analyze_incidents
@@ -170,10 +171,11 @@ class IncidentTracker:
         )
         with Session(engine) as session:
             devices = session.exec(select(Device)).all()
+            links = session.exec(select(DeviceLink)).all()
             unresolved = session.exec(select(Incident).where(Incident.state != RESOLVED)).all()
             changes = diff_incidents(
                 unresolved,
-                analyze_incidents(devices, statuses),
+                analyze_incidents(devices, statuses, links),
                 statuses,
                 {device.id for device in devices},
                 cycle_time,

@@ -70,8 +70,8 @@ docker compose -f infra/docker-compose.yml down
 ```
 
 Container recreation (`down`/`up`, rebuilds, `restart`) keeps persisted data —
-settings, users, devices, latency history, status transitions and incidents —
-in the `backend-data` named volume. How long the history is kept is set by the
+settings, users, devices and their extra links, latency history, status
+transitions and incidents — in the `backend-data` named volume. How long the history is kept is set by the
 optional retention variables in `infra/.env` (see `.env.example`). When a newer
 backend image starts on an existing volume, it upgrades the database schema in
 place and keeps the data (see "Database migrations" in `../README.md`).
