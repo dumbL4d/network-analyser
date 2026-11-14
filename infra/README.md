@@ -121,8 +121,28 @@ When real hardware is ready, replace the device definitions in
 device IPs — the backend and frontend work against whatever the seeded devices
 are, with no code changes.
 
+## Fault injection (optional)
+
+The stack can break its own simulated devices on purpose, to demonstrate the
+monitoring: fail a switch and everything it cuts off, slow a device down,
+make a PLC flap. It is off by default, because the service that does it (the
+`chaos-agent`) mounts the Docker socket.
+
+```sh
+echo "CHAOS_AGENT_TOKEN=$(openssl rand -hex 32)" >> infra/.env
+docker compose -f infra/docker-compose.yml --profile chaos up -d --build
+```
+
+Then log in as an admin and open Admin, Chaos. Read `../docs/chaos.md` first:
+it explains the risk of the Docker socket and what limits it.
+
+For this, every `sim-*` container carries the label `netanalyser.sim=true`,
+runs the image built from `sim/Dockerfile` (Alpine plus `iproute2`) and has
+the `NET_ADMIN` capability. None of that is used unless the profile is running.
+
 ## Deeper reads
 
 - `docker-compose.yml` — full service wiring (networks, volumes, env pass-through).
+- `../docs/chaos.md` — fault injection: architecture, risks, scenarios.
 - `../backend/Dockerfile` and `../frontend/Dockerfile` — the production images.
 - `../README.md` — overall project overview and development setup.

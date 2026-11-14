@@ -51,6 +51,7 @@ from app.db.seed import seed_devices_from_json  # noqa: E402
 from app.db.seed_settings import seed_default_settings  # noqa: E402
 from app.db.seed_users import seed_default_users  # noqa: E402
 from app.db.session import engine, init_db  # noqa: E402
+from app.services.chaos import chaos_controller  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services.debounce import debouncer  # noqa: E402
 from app.services.flap_store import flap_store  # noqa: E402
@@ -85,6 +86,7 @@ def _fresh_in_memory_stores() -> None:
     reset in place before every test."""
     for store in (status_store, history_store, flap_store, debouncer, incident_tracker):
         store.__init__()
+    chaos_controller.reset()  # forget injected faults and end any flap
 
 
 @pytest.fixture

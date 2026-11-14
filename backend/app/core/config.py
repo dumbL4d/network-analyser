@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     # How often the retention job runs.
     RETENTION_INTERVAL_SECONDS: float = 3600.0
 
+    # Fault injection (app/services/chaos.py, docs/chaos.md). Both must be set
+    # for the chaos endpoints to do anything; otherwise they answer 503.
+    # Where the chaos agent listens, e.g. http://chaos-agent:8081.
+    CHAOS_AGENT_URL: str | None = None
+    # The shared secret the agent expects in every request.
+    CHAOS_AGENT_TOKEN: str | None = None
+
     # JWT auth
     # WARNING: the insecure default below MUST be overridden via env var in any
     # real deployment. It exists ONLY for local development convenience.

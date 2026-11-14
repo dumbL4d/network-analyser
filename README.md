@@ -35,6 +35,10 @@ entire warehouse LAN so the whole system runs on one machine.
 - **What-if simulator** — pick devices to fail and see on the topology what
   would be cut off and which incidents would be raised, without touching the
   live network.
+- **Fault injection** — an admin-only Chaos tab breaks the simulated network
+  on purpose: fail, degrade or flap a device, or run a preset. A failure is
+  propagated to every device it cuts off. A separate chaos agent, off by
+  default, does the Docker work. See [docs/chaos.md](docs/chaos.md).
 - **Incident lifecycle** — every root cause becomes a stored incident that is
   opened, optionally acknowledged, and resolved automatically, with a timeline,
   detection delay, MTTR and per-device availability.
@@ -70,6 +74,7 @@ flowchart LR
         FS["FlapStore<br/>(status changes, hot cache)"]
         IA["IncidentAnalysis<br/>(root cause vs collateral)"]
         TG["TopologyGraph<br/>(pure graph algorithms)"]
+        CH["Chaos controller<br/>(plans faults, admin only)"]
         TRK["IncidentTracker<br/>(open / update / resolve)"]
         RET["Retention job<br/>(hourly rollup + cleanup)"]
         DB[("SQLite<br/>backend-data volume")]
@@ -79,6 +84,8 @@ flowchart LR
         SIM["12 × sim-* containers<br/>(Alpine ICMP stubs)"]
     end
 
+    AGENT["chaos-agent<br/>(profile chaos, off by default)"]
+
     UI -- "browser calls :8000 directly" --> API
     API --> DB
     API --> ST
@@ -86,6 +93,10 @@ flowchart LR
     API --> FS
     API --> IA
     API -- "SPOF + what-if" --> TG
+    API --> CH
+    CH -- "what a failure cuts off" --> TG
+    CH -. "control-net + shared secret" .-> AGENT
+    AGENT -. "stop / start / tc netem" .-> SIM
     IA --> ST
     IA -- "devices + links" --> TG
     SSE --> ST
@@ -123,13 +134,14 @@ user's browser straight to the backend.
 │   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
 │   │   ├── models/          Device, DeviceLink, User, AppSettings, the history tables and incidents (SQLModel)
 │   │   ├── routers/         auth, devices, links, settings, users, history, flaps, incidents, stats,
-│   │   │                    analysis (SPOF, what-if), playbooks
+│   │   │                    analysis (SPOF, what-if), chaos (fault injection), playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
 │   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis,
 │   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention,
 │   │   │                    incident_tracker (incident lifecycle), incident_stats (MTTR, availability),
 │   │   │                    topology_graph (graph algorithms), device_links (rules for extra links),
-│   │   │                    topology_analysis (SPOF report, what-if)
+│   │   │                    topology_analysis (SPOF report, what-if),
+│   │   │                    chaos (fault planning and control), chaos_client (talks to the agent)
 │   │   └── data/playbooks.py  Static guided-fix playbook content
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
@@ -144,10 +156,12 @@ user's browser straight to the backend.
 │   │   └── lib/             api client (fetch + SSE), topology layout, metrics helpers
 │   └── Dockerfile           Multi-stage: node build → nginx static server
 ├── infra/
-│   ├── docker-compose.yml   Full stack: 12 sim devices + backend + frontend
+│   ├── docker-compose.yml   Full stack: 12 sim devices + backend + frontend (+ chaos agent, profile "chaos")
 │   ├── devices.seed.json    Seeded devices and extra links (the warehouse topology)
+│   ├── sim/                 Image of a simulated device (Alpine + iproute2)
+│   ├── chaos-agent/         Fault injection executor: the only service on the Docker socket
 │   └── README.md            Deployment runbook
-└── docs/                    (empty; reserved for further docs)
+└── docs/chaos.md            Fault injection: architecture, risks, scenarios
 ```
 
 ## Backend (FastAPI)
@@ -435,6 +449,12 @@ hour ago is not credited with a full day of uptime.
 | `GET`    | `/api/stats/availability?window=` | user        | Per-device uptime over 24h, 7d or 30d         |
 | `GET`    | `/api/analysis/spof`              | user        | Single points of failure, with blast radius   |
 | `POST`   | `/api/analysis/what-if`           | user        | Predicted incidents if given devices failed   |
+| `GET`    | `/api/chaos/state`                | **admin**   | Injected faults in place, and the presets     |
+| `POST`   | `/api/chaos/fail`                 | **admin**   | Fail devices and everything they cut off      |
+| `POST`   | `/api/chaos/degrade`              | **admin**   | Add delay, jitter and packet loss             |
+| `POST`   | `/api/chaos/flap`                 | **admin**   | Switch a device off and on repeatedly         |
+| `POST`   | `/api/chaos/scenario/{name}`      | **admin**   | Run a fault-injection preset                  |
+| `POST`   | `/api/chaos/restore-all`          | **admin**   | Undo every injected fault                     |
 | `GET`    | `/api/playbooks/{type}/{state}`   | user        | Guided-fix playbook for a device type/state    |
 | `GET`    | `/api/settings`                   | user        | Monitoring settings (poll interval, thresholds)|
 | `PATCH`  | `/api/settings`                   | **admin**   | Update monitoring settings                     |
@@ -464,6 +484,10 @@ cut_off_device_ids}]`, largest blast radius first.
 `{incidents, unreachable_device_ids, total_blast_radius}`, where `incidents`
 has the shape of `GET /api/incidents`. It only calculates: nothing is stored
 and the live status is not touched. An unknown device id is a 422.
+
+The `/api/chaos/*` endpoints inject faults into the simulated network. They
+answer 503 unless the chaos agent is running, which it is not by default.
+Bodies, status codes and scenarios are in [docs/chaos.md](docs/chaos.md).
 
 ## Algorithms
 
@@ -580,7 +604,7 @@ flowchart LR
         S["/stability — StabilityView<br/>(flap-count bar ranking + availability table)"]
         I["/incidents — IncidentView<br/>(summary cards, Active and History tabs, playbook stepper)"]
         IDV["/incidents/:id — IncidentDetailView<br/>(event timeline, plus acknowledge and notes for admins)"]
-        A["/admin — AdminPanel<br/>(Devices / Links / Settings / Users tabs)"]
+        A["/admin — AdminPanel<br/>(Devices / Links / Settings / Users / Chaos tabs)"]
         C["/account — AccountPage<br/>(change password)"]
     end
 
@@ -591,7 +615,7 @@ flowchart LR
     S -. "/api/flaps + /api/settings + /api/stats/availability" .-> REST
     I -. "/api/incidents + /history (poll 10 s) + /api/stats/incidents" .-> REST
     IDV -. "/api/incidents/:id (poll 10 s)" .-> REST
-    A -. "/api/devices /links /settings /users" .-> REST
+    A -. "/api/devices /links /settings /users /chaos" .-> REST
 ```
 
 The live status path is **push** (SSE), while everything else is **pull**
@@ -605,7 +629,10 @@ its blast radius. Its What-if panel lists the devices: tick the ones to fail,
 press Simulate, and the graph shows the predicted statuses (`failed`,
 `cut off`) next to the predicted root causes and the total blast radius. Reset
 returns to the live view. The Admin panel has a Links tab to list, add and
-delete extra links; a rejected link shows the backend's reason.
+delete extra links; a rejected link shows the backend's reason. Its Chaos tab
+injects faults into the simulated network: preset scenarios, failing or
+slowing down one device, the list of faults in place, and Restore all (see
+[docs/chaos.md](docs/chaos.md)).
 
 The Incidents page has four summary cards (incidents recorded, mean detection
 delay, MTTR, alerts suppressed) above two tabs. **Active** is the live
@@ -715,6 +742,9 @@ flowchart LR
   not on `warehouse-net`: it never talks to the backend itself (the browser
   does), so attaching it adds nothing.
 - **14 containers total** when running (12 sims + backend + frontend).
+- **`chaos-agent`** (optional, a fifteenth) — fault injection for demos. It
+  only starts with `--profile chaos`, publishes no port, and is the only
+  service on the Docker socket. See [docs/chaos.md](docs/chaos.md).
 
 Persisted SQLite data (settings, users, devices, latency history and status
 transitions) survives `down`/`up` and rebuilds via the `backend-data` volume,

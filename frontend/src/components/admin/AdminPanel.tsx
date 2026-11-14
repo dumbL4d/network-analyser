@@ -1,3 +1,4 @@
+import AdminChaosTab from '@/components/admin/AdminChaosTab'
 import AdminDevicesTab from '@/components/admin/AdminDevicesTab'
 import AdminLinksTab from '@/components/admin/AdminLinksTab'
 import AdminSettingsTab from '@/components/admin/AdminSettingsTab'
@@ -15,7 +16,8 @@ export default function AdminPanel() {
       <div className="mb-4">
         <h2 className="text-2xl font-semibold tracking-tight">Admin Panel</h2>
         <p className="text-sm text-muted-foreground">
-          Manage devices, links, monitoring settings, and users.
+          Manage devices, links, monitoring settings, and users, and inject
+          faults into the simulated network.
         </p>
       </div>
       <Tabs defaultValue="devices">
@@ -26,6 +28,9 @@ export default function AdminPanel() {
           </TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
           <TabsTrigger value="users">Users</TabsTrigger>
+          <TabsTrigger value="chaos" data-testid="chaos-tab">
+            Chaos
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="devices">
           <AdminDevicesTab />
@@ -38,6 +43,9 @@ export default function AdminPanel() {
         </TabsContent>
         <TabsContent value="users">
           <AdminUsersTab />
+        </TabsContent>
+        <TabsContent value="chaos">
+          <AdminChaosTab />
         </TabsContent>
       </Tabs>
     </div>

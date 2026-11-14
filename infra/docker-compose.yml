@@ -12,20 +12,38 @@ networks:
         # Gateway moved off .1 so the firewall device can own 10.99.0.1.
         - subnet: "10.99.0.0/24"
           gateway: "10.99.0.254"
+  # Backend <-> chaos agent only (docs/chaos.md). "internal" means no route to
+  # the host or the internet, and the simulated devices are not on it.
+  control-net:
+    driver: bridge
+    internal: true
+
+# What every simulated device has in common; each sim-* service below adds its
+# address. The label marks the containers the chaos agent may act on. iproute2
+# (in the image) and NET_ADMIN are what `tc netem` needs to add delay and loss
+# on a device's own network interface. Both are unused unless the "chaos"
+# profile is running.
+x-sim: &sim
+  build:
+    context: ./sim
+  # One image for all twelve, instead of twelve identical ones.
+  image: netanalyser-sim:local
+  command: sleep infinity
+  restart: unless-stopped
+  cap_add:
+    - NET_ADMIN
+  labels:
+    netanalyser.sim: "true"
 
 services:
   sim-fw-01:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.1
 
   sim-sw-edge:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.2
@@ -34,81 +52,61 @@ services:
   # sw-ot <-> sw-edge-2 (infra/devices.seed.json) it gives both tier switches a
   # way to the firewall that does not pass through sim-sw-edge.
   sim-sw-edge-2:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.5
 
   sim-sw-server:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.3
 
   sim-sw-ot:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.4
 
   sim-srv-prod-1:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.10
 
   sim-srv-prod-2:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.11
 
   sim-plc-conveyor-1:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.20
 
   sim-hmi-panel-1:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.21
 
   sim-ap-aisle-1:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.30
 
   sim-ap-aisle-2:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.31
 
   sim-scanner-1:
-    image: alpine:3.20
-    command: sleep infinity
-    restart: unless-stopped
+    <<: *sim
     networks:
       warehouse-net:
         ipv4_address: 10.99.0.40
@@ -141,6 +139,8 @@ services:
         # Tickets 1.2/6.1), so any free address works; pinning one (.99, clear
         # of the sims' statics >= .40) makes startup deterministic.
         ipv4_address: 10.99.0.99
+      # Where the chaos agent is, when the "chaos" profile is running.
+      control-net: {}
     environment:
       # REQUIRED and never the insecure dev default from config.py. The `:?`
       # interpolation fails startup if unset, so a missing infra/.env cannot
@@ -158,6 +158,11 @@ services:
       ROLLUP_RETENTION_DAYS: ${ROLLUP_RETENTION_DAYS:-30}
       TRANSITION_RETENTION_DAYS: ${TRANSITION_RETENTION_DAYS:-30}
       RETENTION_INTERVAL_SECONDS: ${RETENTION_INTERVAL_SECONDS:-3600}
+      # Fault injection (docs/chaos.md). The agent only exists under the
+      # "chaos" profile. Without it, or without a token, the chaos endpoints
+      # answer 503 and nothing else is affected.
+      CHAOS_AGENT_URL: ${CHAOS_AGENT_URL:-http://chaos-agent:8081}
+      CHAOS_AGENT_TOKEN: ${CHAOS_AGENT_TOKEN:-}
     restart: unless-stopped
     # No depends_on on the sim-* devices on purpose: Compose would not model
     # them usefully (they are not a formal dependency), and a monitoring tool
@@ -183,6 +188,36 @@ services:
     # sim-* devices itself (the browser does, out-of-band), so attaching it to
     # warehouse-net would add nothing. No volume needed either: the bundle is
     # fully baked into the image.
+
+  # Fault injection executor (docs/chaos.md). OFF by default: it only starts
+  # with `--profile chaos`. It mounts the Docker socket, which is as good as
+  # root on the host, so it is fenced in:
+  #   - no port is published to the host;
+  #   - it is only on control-net, an internal network shared with the backend;
+  #   - every request needs the shared secret CHAOS_AGENT_TOKEN, and the agent
+  #     refuses to start without one;
+  #   - it only acts on containers labelled netanalyser.sim=true, and only
+  #     on those of this Compose project;
+  #   - read-only filesystem, no capabilities, no privilege escalation.
+  chaos-agent:
+    profiles: ["chaos"]
+    build:
+      context: ./chaos-agent
+    environment:
+      CHAOS_AGENT_TOKEN: ${CHAOS_AGENT_TOKEN:-}
+      # Only this Compose project's sim containers are the agent's business.
+      CHAOS_AGENT_PROJECT: ${COMPOSE_PROJECT_NAME:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - control-net
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   backend-data:

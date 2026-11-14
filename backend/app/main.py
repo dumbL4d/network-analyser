@@ -17,6 +17,7 @@ from app.db.session import init_db
 from app.models.user import User
 from app.routers.analysis import router as analysis_router
 from app.routers.auth import router as auth_router
+from app.routers.chaos import router as chaos_router
 from app.routers.devices import router as devices_router
 from app.routers.flaps import router as flaps_router
 from app.routers.history import router as history_router
@@ -26,6 +27,7 @@ from app.routers.playbooks import router as playbooks_router
 from app.routers.settings import router as settings_router
 from app.routers.stats import router as stats_router
 from app.routers.users import router as users_router
+from app.services.chaos import report_leftover_faults
 from app.services.persistence import warm_caches
 from app.services.ping_engine import DeviceStatus
 from app.services.poll_loop import run_poll_loop
@@ -83,6 +85,10 @@ async def lifespan(app: FastAPI):
     seed_default_settings()
     # Refill the in-memory stores, so history and flap counts survive a restart.
     warm_caches()
+    # Faults injected before a restart are still in place: say so in the log.
+    # In a thread, so a slow or absent chaos agent cannot hold up the startup.
+    if settings.CHAOS_AGENT_URL and settings.CHAOS_AGENT_TOKEN:
+        app.state.chaos_report = asyncio.create_task(asyncio.to_thread(report_leftover_faults))
 
     # The background tasks: the poll loop and the hourly retention job. Keep a
     # reference on app.state so they are not garbage collected.
@@ -117,6 +123,7 @@ app.add_middleware(
 
 app.include_router(analysis_router)
 app.include_router(auth_router)
+app.include_router(chaos_router)
 app.include_router(devices_router)
 app.include_router(flaps_router)
 app.include_router(history_router)

@@ -1,3 +1,4 @@
+import type { ChaosState } from '@/types/chaos'
 import type {
   DeviceCreate,
   DeviceOut,
@@ -372,6 +373,58 @@ export function runWhatIf(failedDeviceIds: string[]): Promise<WhatIfResult> {
     method: 'POST',
     authenticated: true,
     body: { failed_device_ids: failedDeviceIds },
+  })
+}
+
+// --- Fault injection (admin; docs/chaos.md) ----------------------------------
+// Every action answers with the faults in place afterwards. When the chaos
+// agent is not running the backend answers 503, and its message says what to
+// do; it reaches the UI as the thrown Error's message.
+
+export function fetchChaosState(): Promise<ChaosState> {
+  return request<ChaosState>('/api/chaos/state', { authenticated: true })
+}
+
+/** Fail devices; everything they cut off is made unreachable as well. */
+export function chaosFail(deviceIds: string[]): Promise<ChaosState> {
+  return request<ChaosState>('/api/chaos/fail', {
+    method: 'POST',
+    authenticated: true,
+    body: { device_ids: deviceIds },
+  })
+}
+
+/** Slow a device down: delay and jitter in ms, packet loss in percent. */
+export function chaosDegrade(
+  deviceId: string,
+  delayMs: number,
+  jitterMs: number,
+  lossPct: number,
+): Promise<ChaosState> {
+  return request<ChaosState>('/api/chaos/degrade', {
+    method: 'POST',
+    authenticated: true,
+    body: {
+      device_id: deviceId,
+      delay_ms: delayMs,
+      jitter_ms: jitterMs,
+      loss_pct: lossPct,
+    },
+  })
+}
+
+export function chaosScenario(name: string): Promise<ChaosState> {
+  return request<ChaosState>(`/api/chaos/scenario/${name}`, {
+    method: 'POST',
+    authenticated: true,
+  })
+}
+
+/** Start every simulated device and remove every slowdown. Safe to repeat. */
+export function chaosRestoreAll(): Promise<ChaosState> {
+  return request<ChaosState>('/api/chaos/restore-all', {
+    method: 'POST',
+    authenticated: true,
   })
 }
 
