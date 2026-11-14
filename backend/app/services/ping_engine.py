@@ -32,8 +32,9 @@ code path works locally and in the Docker deployment.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from icmplib import async_ping
 from pydantic import BaseModel
@@ -41,6 +42,12 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 StatusKey = Literal["healthy", "degraded", "down", "unknown"]
+
+# The probe used for one device: any coroutine function that can be called like
+# ``icmplib.async_ping`` and returns an object with ``is_alive`` and
+# ``avg_rtt``. It is a parameter (defaulting to the real ICMP ping) so tests
+# can inject a fake and never send a packet.
+PingFn = Callable[..., Awaitable[Any]]
 
 
 class DeviceStatus(BaseModel):
@@ -84,6 +91,7 @@ async def ping_one(
     privileged: bool,
     warn_threshold: float,
     crit_threshold: float,
+    ping: PingFn = async_ping,
 ) -> DeviceStatus:
     """Ping a single device and return its :class:`DeviceStatus`.
 
@@ -93,12 +101,15 @@ async def ping_one(
 
     Any exception raised while probing (permission errors, socket errors, ...)
     is caught and reported as ``status="unknown"`` instead of propagating.
+
+    ``ping`` is the probe to use (see :data:`PingFn`); production code leaves
+    the default.
     """
     reachable = False
     latency_ms: float | None = None
 
     try:
-        host = await async_ping(ip, count=1, timeout=timeout, privileged=privileged)
+        host = await ping(ip, count=1, timeout=timeout, privileged=privileged)
         reachable = host.is_alive
         if reachable:
             latency_ms = float(host.avg_rtt) if host.avg_rtt is not None else None
@@ -136,6 +147,7 @@ async def ping_all(
     privileged: bool,
     warn_threshold: float,
     crit_threshold: float,
+    ping: PingFn = async_ping,
 ) -> list[DeviceStatus]:
     """Concurrently ping ``devices`` (a list of ``(device_id, ip)`` tuples).
 
@@ -152,6 +164,7 @@ async def ping_all(
                 privileged,
                 warn_threshold,
                 crit_threshold,
+                ping,
             )
             for device_id, ip in devices
         ]

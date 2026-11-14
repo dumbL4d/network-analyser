@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     PING_INTERVAL_SECONDS: float = 10.0
     LATENCY_WARN_MS: float = 100.0
     LATENCY_CRIT_MS: float = 500.0
+    # False -> the app starts without the background poll loop. The test suite
+    # sets this; nothing is pinged, so devices stay "unknown".
+    POLL_ENABLED: bool = True
 
     # Rolling history
     HISTORY_MAX_SAMPLES: int = 36

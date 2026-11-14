@@ -84,6 +84,7 @@ user's browser straight to the backend.
 
 ```
 .
+├── .github/workflows/ci.yml CI: backend tests + coverage, frontend typecheck/lint/build
 ├── backend/                 FastAPI application (Python 3.12)
 │   ├── app/
 │   │   ├── main.py          App factory, lifespan (DB seed + poll loop), SSE endpoint
@@ -94,6 +95,7 @@ user's browser straight to the backend.
 │   │   ├── schemas/         Pydantic request/response DTOs
 │   │   ├── services/        ping_engine, poll_loop, status/history/flap stores, incident_analysis
 │   │   └── data/playbooks.py  Static guided-fix playbook content
+│   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   └── Dockerfile
 ├── frontend/                React SPA (React 19 + TypeScript + Vite)
 │   ├── src/
@@ -138,6 +140,9 @@ Everything the poll loop needs is re-read from the DB-backed `AppSettings`
 singleton at the **start of every cycle**, so an admin editing the poll
 interval or latency thresholds in the UI takes effect within one cycle — no
 backend restart required.
+
+Setting `POLL_ENABLED=False` starts the API without the poll loop (the test
+suite does this). Nothing is pinged, so every device stays `unknown`.
 
 ### Device status classification
 
@@ -368,6 +373,44 @@ docker compose -f infra/docker-compose.yml down   # or the whole stack
 
 Or run the whole stack (sims + backend + frontend) per **`infra/README.md`**.
 
+## Testing
+
+Backend tests live in `backend/tests/` and run with pytest. They need no
+network, no root and no Docker:
+
+- they use a temporary SQLite file, never the dev database
+  (`tests/conftest.py` refuses to start otherwise);
+- the background poll loop is off (`POLL_ENABLED=false`), and the loop itself
+  is tested with a fake ping function, so no ICMP is sent.
+
+```sh
+cd backend
+python -m venv .venv && source .venv/bin/activate   # Python 3.12
+pip install -r requirements.txt -r requirements-dev.txt
+pytest                                              # run the suite
+pytest --cov=app --cov-report=term-missing          # same, with a coverage report
+coverage report --include="app/services/*" --fail-under=80   # the gate CI enforces
+coverage html                                       # optional: browsable report in htmlcov/
+```
+
+These are characterization tests: they pin what the code does today, so a
+later change in behaviour shows up as a failing test. A test marked `xfail`
+records a known bug that has deliberately not been fixed yet; pytest lists each
+one with its reason at the end of the run.
+
+Frontend checks:
+
+```sh
+cd frontend
+npm ci
+npx tsc -b --noEmit   # typecheck
+npm run lint
+npm run build
+```
+
+`.github/workflows/ci.yml` runs both sets of commands on every push and pull
+request.
+
 ## Tech stack
 
 | Layer        | Technologies                                                                  |
@@ -375,3 +418,4 @@ Or run the whole stack (sims + backend + frontend) per **`infra/README.md`**.
 | Backend      | Python 3.12, FastAPI, Uvicorn, SQLModel + SQLite, `icmplib`, sse-starlette, passlib + bcrypt (4.0.1), python-jose, pydantic-settings |
 | Frontend     | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix), @xyflow/react, recharts, React Router |
 | Deployment   | Docker Compose, nginx, Alpine, multi-stage Dockerfiles                        |
+| Testing / CI | pytest, pytest-asyncio, pytest-cov, httpx (`TestClient`), GitHub Actions      |

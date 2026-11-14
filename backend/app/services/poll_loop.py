@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
+from icmplib import async_ping
 from sqlmodel import Session, select
 
 from app.core.config import settings
@@ -11,7 +13,7 @@ from app.models.device import Device
 from app.models.settings import AppSettings
 from app.services.flap_store import flap_store
 from app.services.history_store import history_store
-from app.services.ping_engine import ping_all
+from app.services.ping_engine import PingFn, ping_all
 from app.services.status_store import status_store
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,10 @@ def _load_devices() -> list[tuple[str, str]]:
         return [(device.id, device.ip) for device in devices]
 
 
-async def run_poll_loop() -> None:
+async def run_poll_loop(
+    ping: PingFn = async_ping,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
     """Ping all devices forever, publishing each snapshot to the status store.
 
     The monitoring-behavior values (poll interval + latency thresholds) are
@@ -31,6 +36,10 @@ async def run_poll_loop() -> None:
     iteration, so admin edits take effect within one cycle without a backend
     restart. Timeout and privileged mode remain low-level concerns read from
     the static .env-backed ``Settings`` object.
+
+    ``ping`` and ``sleep`` default to the real ICMP ping and ``asyncio.sleep``.
+    They are parameters only so tests can inject fakes and step the loop one
+    cycle at a time without sending packets or waiting.
     """
     logger.info(
         "Status poll loop started (interval=%ss)",
@@ -64,6 +73,7 @@ async def run_poll_loop() -> None:
                 privileged=settings.PING_PRIVILEGED,
                 warn_threshold=warn_threshold,
                 crit_threshold=crit_threshold,
+                ping=ping,
             )
             status_store.update(results)
             history_store.record(results)
@@ -76,4 +86,4 @@ async def run_poll_loop() -> None:
         except Exception:
             logger.error("Status poll iteration failed; continuing", exc_info=True)
 
-        await asyncio.sleep(interval)
+        await sleep(interval)

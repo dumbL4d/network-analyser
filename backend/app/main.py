@@ -71,17 +71,21 @@ async def lifespan(app: FastAPI):
     seed_default_settings()
 
     # Keep a reference on app.state so the task is not garbage collected.
-    app.state.poll_task = asyncio.create_task(run_poll_loop())
+    # POLL_ENABLED=False (the test suite) starts the API without the loop.
+    app.state.poll_task = (
+        asyncio.create_task(run_poll_loop()) if settings.POLL_ENABLED else None
+    )
 
     try:
         yield
     finally:
         task = app.state.poll_task
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
