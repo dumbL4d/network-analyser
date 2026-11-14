@@ -127,8 +127,14 @@ def warm_caches(now: datetime | None = None) -> None:
             )
             last_status[device_id] = rows[-1].confirmed_status
             if now - rows[-1].ts <= fresh_for:
+                # The first sample of the run of failures at the end, if any.
+                failing_since = None
+                for row in reversed(rows):
+                    if row.raw_status == "healthy":
+                        break
+                    failing_since = row.ts
                 states[device_id] = state_from_history(
-                    rows[-1].confirmed_status, [row.raw_status for row in rows]
+                    rows[-1].confirmed_status, [row.raw_status for row in rows], failing_since
                 )
 
         flap_since = now - timedelta(days=settings.TRANSITION_RETENTION_DAYS)

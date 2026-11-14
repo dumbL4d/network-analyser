@@ -8,13 +8,16 @@ from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import Table, inspect, select
+from sqlmodel import Session
 
 from app.core.config import settings
 from app.db.session import engine
 from app.models.device import Device
+from app.models.incident import Incident, IncidentEvent
 from app.services.debounce import debouncer
 from app.services.flap_store import flap_store
 from app.services.history_store import history_store
+from app.services.incident_tracker import incident_tracker
 from app.services.persistence import warm_caches
 from app.services.ping_engine import DeviceStatus, PingFn, StatusKey
 from app.services.poll_loop import run_poll_loop
@@ -42,10 +45,42 @@ def stored(table: Table, *columns: str) -> list[tuple]:
     return [tuple(getattr(row, column) for column in columns) for row in rows]
 
 
+def store_incident(
+    root_device_id: str,
+    opened_at: datetime,
+    *,
+    first_failure_at: datetime | None = None,
+    resolved_at: datetime | None = None,
+    acknowledged_by: str | None = None,
+    peak_affected_count: int = 0,
+    affected_device_ids: tuple[str, ...] = (),
+) -> int:
+    """Insert an incident row directly and return its id. Its state follows
+    from the arguments: resolved, acknowledged, or open."""
+    state = "resolved" if resolved_at else "acknowledged" if acknowledged_by else "open"
+    with Session(engine) as session:
+        incident = Incident(
+            root_device_id=root_device_id,
+            state=state,
+            opened_at=opened_at,
+            first_failure_at=first_failure_at or opened_at,
+            acknowledged_at=opened_at if acknowledged_by else None,
+            acknowledged_by=acknowledged_by,
+            resolved_at=resolved_at,
+            peak_affected_count=peak_affected_count,
+            affected_device_ids=list(affected_device_ids),
+        )
+        session.add(incident)
+        session.flush()
+        session.add(IncidentEvent(incident_id=incident.id, ts=opened_at, type="opened", details={}))
+        session.commit()
+        return incident.id
+
+
 def restart_backend(now: datetime | None = None) -> None:
     """What a backend restart does to its memory: every in-memory store is
     emptied, then startup refills them from the database."""
-    for store in (status_store, history_store, flap_store, debouncer):
+    for store in (status_store, history_store, flap_store, debouncer, incident_tracker):
         store.__init__()
     warm_caches(now)
 

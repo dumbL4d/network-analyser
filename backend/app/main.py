@@ -22,6 +22,7 @@ from app.routers.history import router as history_router
 from app.routers.incidents import router as incidents_router
 from app.routers.playbooks import router as playbooks_router
 from app.routers.settings import router as settings_router
+from app.routers.stats import router as stats_router
 from app.routers.users import router as users_router
 from app.services.persistence import warm_caches
 from app.services.ping_engine import DeviceStatus
@@ -119,6 +120,7 @@ app.include_router(history_router)
 app.include_router(incidents_router)
 app.include_router(playbooks_router)
 app.include_router(settings_router)
+app.include_router(stats_router)
 app.include_router(users_router)
 
 

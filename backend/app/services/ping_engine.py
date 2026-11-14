@@ -56,7 +56,7 @@ class DeviceStatus(BaseModel):
     Straight out of the ping engine, ``status`` is the raw classification of
     this poll. The poll loop then passes each reading through the debouncer
     (:mod:`app.services.debounce`), which replaces ``status`` with the
-    confirmed status and fills in the last three fields.
+    confirmed status and fills in the remaining fields.
     """
 
     device_id: str
@@ -66,6 +66,9 @@ class DeviceStatus(BaseModel):
     raw_status: StatusKey | None = None
     consecutive_failures: int = 0
     consecutive_successes: int = 0
+    # When the current run of non-healthy raw results began (the first failing
+    # probe of the streak), or None. Used for an incident's first_failure_at.
+    failing_since: datetime | None = None
 
 
 def classify_status(

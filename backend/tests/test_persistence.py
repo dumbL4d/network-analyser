@@ -319,6 +319,7 @@ def test_debounce_state_is_restored_when_the_last_poll_is_recent():
     assert state.confirmed == "down"  # the last confirmed status that was stored
     assert state.recent == ("healthy", "down", "down")
     assert (state.consecutive_failures, state.consecutive_successes) == (2, 0)
+    assert state.failing_since == ago(seconds=20)  # the first failing poll of the run
 
 
 def test_flaps_are_counted_over_the_transition_retention_window(client, admin_headers):

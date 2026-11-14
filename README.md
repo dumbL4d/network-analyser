@@ -28,6 +28,9 @@ entire warehouse LAN so the whole system runs on one machine.
   (firewall → switches → PLCs/HMIs/servers). An unhealthy device whose parent
   is also unhealthy is marked **collateral**; one whose parent is healthy is a
   **root cause** with the list of downstream devices it took down.
+- **Incident lifecycle** — every root cause becomes a stored incident that is
+  opened, optionally acknowledged, and resolved automatically, with a timeline,
+  detection delay, MTTR and per-device availability.
 - **Guided-fix playbooks** — each incident links to a static, device-type +
   status-specific troubleshooting playbook.
 - **Role-based access** — JWT login with `admin` / `viewer` roles; device CRUD,
@@ -59,6 +62,7 @@ flowchart LR
         HS["HistoryStore<br/>(recent samples, hot cache)"]
         FS["FlapStore<br/>(status changes, hot cache)"]
         IA["IncidentAnalysis<br/>(root cause vs collateral)"]
+        TRK["IncidentTracker<br/>(open / update / resolve)"]
         RET["Retention job<br/>(hourly rollup + cleanup)"]
         DB[("SQLite<br/>backend-data volume")]
     end
@@ -83,6 +87,9 @@ flowchart LR
     DEB -- "confirmed status" --> FS
     POLL -- "raw readings" --> HS
     POLL -- "samples + transitions, every cycle" --> DB
+    POLL -- "confirmed status, every cycle" --> TRK
+    TRK --> IA
+    TRK -- "incidents + timeline" --> DB
     RET --> DB
     DB -. warm-up at startup .-> HS
     DB -. warm-up at startup .-> FS
@@ -104,11 +111,12 @@ user's browser straight to the backend.
 │   │   ├── main.py          App factory, lifespan (migrate, seed, warm-up, background tasks), SSE endpoint
 │   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth deps
 │   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
-│   │   ├── models/          Device, User, AppSettings, and the history tables (SQLModel)
-│   │   ├── routers/         auth, devices, settings, users, history, flaps, incidents, playbooks
+│   │   ├── models/          Device, User, AppSettings, the history tables and incidents (SQLModel)
+│   │   ├── routers/         auth, devices, settings, users, history, flaps, incidents, stats, playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
 │   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis,
-│   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention
+│   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention,
+│   │   │                    incident_tracker (incident lifecycle), incident_stats (MTTR, availability)
 │   │   └── data/playbooks.py  Static guided-fix playbook content
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
@@ -117,7 +125,8 @@ user's browser straight to the backend.
 │   ├── src/
 │   │   ├── components/      Views: Topology, DeviceDetail, Metrics, Stability, Incidents, Admin, Login
 │   │   ├── contexts/        AuthContext (JWT state)
-│   │   ├── hooks/           useStatusStream (SSE), useDevices, useHistory, useFlapCounts, useIncidents
+│   │   ├── hooks/           useStatusStream (SSE), useDevices, useHistory, useFlapCounts, useIncidents,
+│   │   │                    useIncidentRecords, useAvailability, usePolled (shared polling)
 │   │   └── lib/             api client (fetch + SSE), topology layout, metrics helpers
 │   └── Dockerfile           Multi-stage: node build → nginx static server
 ├── infra/
@@ -151,7 +160,8 @@ flowchart TD
     K --> G["status_store.update()<br/>confirmed status, notify SSE subscribers"]
     K --> I["flap_store.record()<br/>confirmed status changes"]
     I --> P["persist_cycle() in a worker thread<br/>samples + transitions, one transaction"]
-    P --> J["asyncio.sleep(interval)"]
+    P --> T["incident_tracker.track() in a worker thread<br/>open / update / resolve stored incidents"]
+    T --> J["asyncio.sleep(interval)"]
     G --> J
     H --> J
     J --> C
@@ -275,6 +285,78 @@ Each root cause carries the list of `downstream_affected` devices it took down,
 and the frontend renders these as incident cards with a guided-fix playbook
 stepper linked from the static `backend/app/data/playbooks.py`.
 
+### Incident lifecycle
+
+The analysis above is stateless: it answers "what is wrong right now?" and
+remembers nothing. The **incident tracker**
+(`backend/app/services/incident_tracker.py`) adds the memory. The poll loop
+calls it after every cycle (never per HTTP request). It runs the same
+analysis, compares the result with the unresolved incidents in the database,
+and stores what changed. There is one incident per outage, keyed by its
+root-cause device.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> open: a new root cause is confirmed
+    open --> acknowledged: an admin acknowledges it
+    open --> resolved: the root device is healthy again
+    acknowledged --> resolved: the root device is healthy again
+    resolved --> [*]
+```
+
+What the tracker does each cycle:
+
+- **Open.** A root cause with no unresolved incident gets a new one.
+  `opened_at` is the poll that confirmed it; `first_failure_at` is the first
+  failing raw probe of the streak that led to it (from the debouncer).
+- **Update.** When the set of downstream devices changes, the incident's
+  snapshot and its peak are updated and an `affected_changed` event is logged.
+  Collateral devices never get an incident of their own.
+- **Resolve.** When the root device is confirmed healthy again (or deleted),
+  the incident is resolved. A later failure of the same device is a **new**
+  incident.
+
+Three cases are handled on purpose:
+
+- If an outage further up turns the root device into collateral, its incident
+  is left as it is: the device is still down.
+- If the root device becomes `unknown` (the probe itself fails), the incident
+  stays open. Not being able to measure is not a recovery.
+- If a device is still down when its parent recovers, it becomes a root cause
+  and gets its own incident, with no detection delay because it was already
+  known to be down.
+
+**Restarts.** Incidents live in the database and the tracker keeps no other
+state, so there is no special restart code. The first cycle after a restart
+continues the incidents whose root is still unhealthy, resolves the ones that
+recovered while the backend was down, and opens new ones. A partial unique
+index allows only one unresolved incident per root device, so a duplicate
+cannot be stored.
+
+**Timeline.** Every incident has events: `opened`, `affected_changed`,
+`acknowledged`, `note` and `resolved`. Acknowledging and adding notes are
+admin actions; everything else is logged by the tracker.
+
+**Statistics** (`GET /api/stats/incidents`, over all stored incidents):
+
+| Field                          | Meaning                                                      |
+| ------------------------------ | ------------------------------------------------------------ |
+| `count`                        | incidents recorded (`open_count` and `resolved_count` too)   |
+| `mean_detection_delay_seconds` | mean of `opened_at - first_failure_at`                       |
+| `mttr_seconds`                 | mean of `resolved_at - opened_at`, resolved incidents only   |
+| `alerts_suppressed`            | sum of each incident's peak number of collateral devices     |
+
+With the default thresholds the detection delay is about two poll intervals:
+a failure is confirmed on the third failing poll.
+
+**Availability** (`GET /api/stats/availability?window=24h|7d|30d`) is computed
+from `status_transition`. For each device it rebuilds the status over the
+window and reports `uptime_percent`, `downtime_seconds` and `outages`. Only
+`down` counts as downtime; a degraded device still answers. A device is judged
+on the time it was actually monitored (`observed_seconds`), so one added an
+hour ago is not credited with a full day of uptime.
+
 ### API endpoints
 
 | Method   | Path                              | Access      | Description                                   |
@@ -292,7 +374,13 @@ stepper linked from the static `backend/app/data/playbooks.py`.
 | `DELETE` | `/api/devices/{id}`               | **admin**   | Delete device (blocked if it has children)     |
 | `GET`    | `/api/history/{id}`               | user        | Latency history; `?window=` for longer ranges |
 | `GET`    | `/api/flaps`                      | user        | Flap counts (last 30 days), highest first     |
-| `GET`    | `/api/incidents`                  | user        | Root-cause/collateral incident set             |
+| `GET`    | `/api/incidents`                  | user        | Live root-cause/collateral incident set       |
+| `GET`    | `/api/incidents/history`          | user        | Stored incidents, newest first (see below)    |
+| `GET`    | `/api/incidents/{id}`             | user        | One stored incident with its timeline         |
+| `POST`   | `/api/incidents/{id}/acknowledge` | **admin**   | Acknowledge an open incident                  |
+| `POST`   | `/api/incidents/{id}/notes`       | **admin**   | Add a note to an incident's timeline          |
+| `GET`    | `/api/stats/incidents`            | user        | Detection delay, MTTR and alerts suppressed   |
+| `GET`    | `/api/stats/availability?window=` | user        | Per-device uptime over 24h, 7d or 30d         |
 | `GET`    | `/api/playbooks/{type}/{state}`   | user        | Guided-fix playbook for a device type/state    |
 | `GET`    | `/api/settings`                   | user        | Monitoring settings (poll interval, thresholds)|
 | `PATCH`  | `/api/settings`                   | **admin**   | Update monitoring settings                     |
@@ -303,6 +391,12 @@ stepper linked from the static `backend/app/data/playbooks.py`.
 > **SSE auth note:** the stream endpoint authenticates via a `token` query
 > parameter because the browser `EventSource` API cannot set an
 > `Authorization` header; every other endpoint uses `Bearer` tokens.
+
+`GET /api/incidents/history` takes `state` (`open`, `acknowledged` or
+`resolved`; may be repeated), `device_id` (the root-cause device), `limit`
+(1–200, default 50) and `offset`, and returns `{total, limit, offset, items}`.
+`POST /api/incidents/{id}/notes` takes `{"text": "..."}` (1–2000 characters).
+Acknowledging an incident that is not open returns 409.
 
 ## Frontend (React)
 
@@ -322,8 +416,9 @@ flowchart LR
         T["/ — TopologyView<br/>(@xyflow/react graph of the device tree)"]
         D["/devices/:id — DeviceDetailView<br/>(latency chart with time range + status)"]
         M["/metrics — MetricsView<br/>(Latency with time range & Status Overview tabs, recharts)"]
-        S["/stability — StabilityView<br/>(flap-count bar ranking)"]
-        I["/incidents — IncidentView<br/>(root cause/collateral cards + playbook stepper)"]
+        S["/stability — StabilityView<br/>(flap-count bar ranking + availability table)"]
+        I["/incidents — IncidentView<br/>(summary cards, Active and History tabs, playbook stepper)"]
+        IDV["/incidents/:id — IncidentDetailView<br/>(event timeline, plus acknowledge and notes for admins)"]
         A["/admin — AdminPanel<br/>(Devices / Settings / Users tabs)"]
         C["/account — AccountPage<br/>(change password)"]
     end
@@ -331,14 +426,24 @@ flowchart LR
     T -. SSE .-> STREAM["/api/stream/status (EventSource + token)"]
     M -. SSE + /api/history .-> STREAM
     D -. /api/history .-> REST["Other /api /* REST calls"]
-    S -. /api/flaps + /api/settings .-> REST
-    I -. /api/incidents (poll 10 s) .-> REST
+    S -. "/api/flaps + /api/settings + /api/stats/availability" .-> REST
+    I -. "/api/incidents + /history (poll 10 s) + /api/stats/incidents" .-> REST
+    IDV -. "/api/incidents/:id (poll 10 s)" .-> REST
     A -. /api/devices /settings /users .-> REST
 ```
 
 The live status path is **push** (SSE), while everything else is **pull**
-(REST polling): incidents re-poll every 10 s, flap counts/settings on mount,
-and history per device view.
+(REST polling): live and stored incidents re-poll every 10 s, incident
+statistics every 30 s, availability every minute, flap counts/settings on
+mount, and history per device view.
+
+The Incidents page has four summary cards (incidents recorded, mean detection
+delay, MTTR, alerts suppressed) above two tabs. **Active** is the live
+root-cause/collateral view with the playbook stepper, and each root cause
+links to its stored incident. **History** lists the stored incidents with a
+state filter and paging. An incident's own page shows its details and
+timeline; admins also get an Acknowledge button and a note form. The Stability
+page has an availability table with a 24 hours / 7 days / 30 days selector.
 
 The latency charts (device detail, and the Latency tab of Metrics) have a
 time-range selector: **Live** (the most recent samples, refreshed every 10 s),
@@ -499,12 +604,21 @@ flap counts survive a backend restart.
   `fail_count`.
 - **`status_transition`**: one row per confirmed status change (a flap).
   Columns: `device_id`, `ts`, `from_status`, `to_status`.
+- **`incident`**: one row per outage (see "Incident lifecycle"). Columns:
+  `root_device_id`, `state`, `opened_at`, `first_failure_at`,
+  `acknowledged_at`, `acknowledged_by`, `resolved_at`, `peak_affected_count`,
+  `affected_device_ids` (the downstream devices, stored as JSON).
+- **`incident_event`**: an incident's timeline, one row per event. Columns:
+  `incident_id`, `ts`, `type`, `details` (JSON).
 
 `latency_sample` and `status_transition` are indexed on `(device_id, ts)`, and
-`latency_rollup_1m` is unique on `(device_id, bucket_start)`. All timestamps
-are UTC. In a rollup, `min` / `avg` / `max` cover the polls that got a reply
-and `fail_count` is the number that did not. None of these tables references
-`device`, so the history of a deleted device simply ages out.
+`latency_rollup_1m` is unique on `(device_id, bucket_start)`. `incident` has a
+partial unique index that allows one unresolved incident per root device. All
+timestamps are UTC. In a rollup, `min` / `avg` / `max` cover the polls that
+got a reply and `fail_count` is the number that did not. None of these tables
+references `device`, so the history of a deleted device simply ages out.
+Incidents are the exception to ageing out: there are few of them, so they are
+kept until the database is deleted.
 
 ### Data lifecycle
 
@@ -621,6 +735,7 @@ its data.
 - `0002` adds `failure_threshold` and `recovery_threshold` to `appsettings`.
 - `0003` adds the history tables: `latency_sample`, `latency_rollup_1m` and
   `status_transition`.
+- `0004` adds the incident tables: `incident` and `incident_event`.
 
 Every change to a model in `backend/app/models/` needs a migration:
 
@@ -629,7 +744,7 @@ cd backend
 source .venv/bin/activate
 alembic upgrade head      # bring your local database up to date first
 # ...edit the model...
-alembic revision --autogenerate --rev-id 0004 -m "describe the change"
+alembic revision --autogenerate --rev-id 0005 -m "describe the change"
 # review the new file in app/db/migrations/versions/, then:
 alembic upgrade head      # or simply start the backend
 pytest                    # test_migrations.py fails if a model has no migration

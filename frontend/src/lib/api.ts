@@ -8,7 +8,16 @@ import type {
   HistoryWindow,
   HistoryWindowOut,
 } from '@/types/device'
-import type { IncidentOut, PlaybookOut } from '@/types/incident'
+import type {
+  AvailabilityOut,
+  AvailabilityWindow,
+  IncidentDetail,
+  IncidentHistoryPage,
+  IncidentOut,
+  IncidentState,
+  IncidentStats,
+  PlaybookOut,
+} from '@/types/incident'
 import type { AppSettingsOut, SettingsUpdate } from '@/types/settings'
 import type {
   PasswordChangeRequest,
@@ -166,6 +175,68 @@ export function fetchFlapCounts(): Promise<FlapCountOut[]> {
 /** Live root-cause/collateral incident list; re-evaluated by the backend per call. */
 export function fetchIncidents(): Promise<IncidentOut[]> {
   return request<IncidentOut[]>('/api/incidents', { authenticated: true })
+}
+
+// --- Stored incidents, their timeline and statistics -------------------------
+
+/** One page of stored incidents, most recently opened first. */
+export function fetchIncidentHistory(
+  params: {
+    states?: IncidentState[]
+    deviceId?: string
+    limit?: number
+    offset?: number
+  } = {},
+): Promise<IncidentHistoryPage> {
+  const query = new URLSearchParams()
+  for (const state of params.states ?? []) query.append('state', state)
+  if (params.deviceId) query.set('device_id', params.deviceId)
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  if (params.offset !== undefined) query.set('offset', String(params.offset))
+  const suffix = query.size > 0 ? `?${query.toString()}` : ''
+  return request<IncidentHistoryPage>(`/api/incidents/history${suffix}`, {
+    authenticated: true,
+  })
+}
+
+export function fetchIncident(incidentId: number): Promise<IncidentDetail> {
+  return request<IncidentDetail>(`/api/incidents/${incidentId}`, {
+    authenticated: true,
+  })
+}
+
+/** Admin only. A 409 means the incident is no longer open. */
+export function acknowledgeIncident(
+  incidentId: number,
+): Promise<IncidentDetail> {
+  return request<IncidentDetail>(`/api/incidents/${incidentId}/acknowledge`, {
+    method: 'POST',
+    authenticated: true,
+  })
+}
+
+/** Admin only. */
+export function addIncidentNote(
+  incidentId: number,
+  text: string,
+): Promise<IncidentDetail> {
+  return request<IncidentDetail>(`/api/incidents/${incidentId}/notes`, {
+    method: 'POST',
+    authenticated: true,
+    body: { text },
+  })
+}
+
+export function fetchIncidentStats(): Promise<IncidentStats> {
+  return request<IncidentStats>('/api/stats/incidents', { authenticated: true })
+}
+
+export function fetchAvailability(
+  window: AvailabilityWindow,
+): Promise<AvailabilityOut> {
+  return request<AvailabilityOut>(`/api/stats/availability?window=${window}`, {
+    authenticated: true,
+  })
 }
 
 export function fetchPlaybook(

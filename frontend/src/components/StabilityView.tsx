@@ -8,6 +8,7 @@ import {
   YAxis,
 } from 'recharts'
 
+import AvailabilityTable from '@/components/stability/AvailabilityTable'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDevices } from '@/hooks/useDevices'
 import { useFlapCounts } from '@/hooks/useFlapCounts'
@@ -143,6 +144,10 @@ export default function StabilityView() {
           </CardContent>
         </Card>
       )}
+
+      <div className="mt-6">
+        <AvailabilityTable devices={devices} />
+      </div>
     </div>
   )
 }

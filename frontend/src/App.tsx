@@ -4,6 +4,7 @@ import AccountPage from '@/components/AccountPage'
 import AdminPanel from '@/components/admin/AdminPanel'
 import AdminRoute from '@/components/AdminRoute'
 import DeviceDetailView from '@/components/DeviceDetailView'
+import IncidentDetailView from '@/components/IncidentDetailView'
 import IncidentView from '@/components/IncidentView'
 import LoginPage from '@/components/LoginPage'
 import MetricsView from '@/components/MetricsView'
@@ -159,6 +160,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <IncidentView />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/incidents/:incidentId"
+          element={
+            <ProtectedRoute>
+              <IncidentDetailView />
             </ProtectedRoute>
           }
         />

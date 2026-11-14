@@ -50,6 +50,7 @@ from app.main import app  # noqa: E402
 from app.services.debounce import debouncer  # noqa: E402
 from app.services.flap_store import flap_store  # noqa: E402
 from app.services.history_store import history_store  # noqa: E402
+from app.services.incident_tracker import incident_tracker  # noqa: E402
 from app.services.status_store import status_store  # noqa: E402
 
 # Hard stop if the engine is not pointing at the temp file (for example because
@@ -74,10 +75,10 @@ def _remove_temp_database() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _fresh_in_memory_stores() -> None:
-    """The status/history/flap stores and the debouncer are process-wide
-    singletons that the app imports by name, so they are emptied in place
-    before every test."""
-    for store in (status_store, history_store, flap_store, debouncer):
+    """The status/history/flap stores, the debouncer and the incident tracker
+    are process-wide singletons that the app imports by name, so they are
+    reset in place before every test."""
+    for store in (status_store, history_store, flap_store, debouncer, incident_tracker):
         store.__init__()
 
 

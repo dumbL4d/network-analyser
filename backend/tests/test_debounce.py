@@ -12,6 +12,7 @@ Rules under test, from app/services/debounce.py:
 
 import itertools
 import random
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -276,6 +277,42 @@ def test_streak_counters_keep_counting_past_the_remembered_window():
 
     assert (state.consecutive_failures, state.consecutive_successes) == (25, 0)
     assert len(state.recent) == MAX_THRESHOLD  # only the last 10 raw results are kept
+
+
+# --- when the current run of failures began ------------------------------------
+
+
+def test_failing_since_is_the_time_of_the_first_failure_of_the_current_run():
+    start = datetime(2026, 11, 15, 10, 0, 0, tzinfo=timezone.utc)
+    raws = ["healthy", "down", "degraded", "down", "healthy", "healthy", "down"]
+    state = None
+    seen = []
+    for index, raw in enumerate(raws):
+        state = step(state, raw, at=start + timedelta(seconds=10 * index))
+        seen.append(None if state.failing_since is None else int((state.failing_since - start).total_seconds()))
+
+    # Set by the first non-healthy result (10 s), kept for the rest of the run,
+    # cleared by a healthy one, and set afresh when the next run starts (60 s).
+    assert seen == [None, 10, 10, 10, None, None, 60]
+
+
+def test_failing_since_of_a_first_ever_failing_result():
+    at = datetime(2026, 11, 15, 10, 0, 0, tzinfo=timezone.utc)
+
+    assert step(None, "down", at=at).failing_since == at
+    assert step(None, "healthy", at=at).failing_since is None
+    assert step(None, "down").failing_since is None  # no timestamps supplied
+
+
+def test_apply_reports_when_each_device_started_failing():
+    debouncer = Debouncer()
+    debouncer.apply([make_status("a", "healthy", 1.0)])
+    first_failure = make_status("a", "down")
+    debouncer.apply([first_failure])
+
+    (confirmed,) = debouncer.apply([make_status("a", "down")])
+
+    assert confirmed.failing_since == first_failure.timestamp
 
 
 # --- every short sequence, checked against the rules ---------------------------

@@ -172,6 +172,8 @@ ADMIN_ONLY = [
     ("GET", "/api/users", None),
     ("POST", "/api/users", NEW_USER),
     ("DELETE", "/api/users/1", None),
+    ("POST", "/api/incidents/1/acknowledge", None),
+    ("POST", "/api/incidents/1/notes", {"text": "checked the cabling"}),
 ]
 
 
@@ -205,6 +207,9 @@ def test_a_rejected_viewer_request_changes_nothing(client, viewer_headers, admin
         "/api/history/fw-01",
         "/api/flaps",
         "/api/incidents",
+        "/api/incidents/history",
+        "/api/stats/incidents",
+        "/api/stats/availability",
         "/api/playbooks/switch/down",
         "/api/settings",
     ],
