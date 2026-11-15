@@ -32,6 +32,8 @@ cannot read the database file.
 | 7 | **Injected script, framing, content sniffing** in the frontend. | React escapes what it renders. On top of that nginx sends a Content-Security-Policy (scripts only from the server itself, none inline; connections only to the server and the API; no framing), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. | `frontend/nginx.conf` |
 | 8 | **"It was not me."** | An audit log of who did what, when and from which address. | `services/audit.py` |
 | 9 | **The Docker socket.** | Off unless the `chaos` profile is started; then one small service holds it, reachable only by the backend. | [chaos.md](chaos.md) |
+| 10 | **A signing secret that is public.** The example files carry a placeholder for `JWT_SECRET_KEY`. With one of them in use, anyone could sign a token for `admin` without knowing a password. | The backend refuses to start on a shipped placeholder, or on a secret shorter than 32 characters, before it touches the database. `DEMO_MODE` is the one exception, and it logs a warning. A test fails if an example file ships a value that is not on the list of placeholders. | `core/security.py`, `main.py` |
+| 11 | **Input that breaks the monitor.** A setting or a device that an admin mistypes, or a seed file with a mistake. | Settings must be finite numbers inside their ranges (the poll interval between 5 seconds and an hour), so one value cannot stop the polling or make the settings unreadable. A device id is limited to what is safe in a URL, and text fields have a length. A loop of parents is refused by the API and skipped by the seed loader, and the analysis that walks the tree visits each device once. | `routers/settings.py`, `schemas/device.py`, `db/seed.py`, `services/incident_analysis.py` |
 
 ## How a request is authenticated
 
@@ -132,8 +134,14 @@ failure goes to the application log: a full disk must not lock everybody out.
 - **Generated first passwords are in the backend log.** Anyone who can read
   the log before the first login can use them. They stop working at that
   login's forced change.
-- **`DEMO_MODE` is insecure on purpose.** Publicly documented passwords and no
-  forced change.
+- **`DEMO_MODE` is insecure on purpose.** Publicly documented passwords, no
+  forced change, and it starts on a placeholder signing secret.
+- **The signing secret is checked for two things only:** that it is not a
+  shipped placeholder, and that it has 32 characters. A long secret that is
+  easy to guess is accepted. Changing the secret ends every session.
+- **The seed file is trusted.** Its devices are stored without the checks the
+  API makes (id, lengths, type); only a loop of parents is caught. It is
+  written by whoever deploys the system, not by a user.
 - **The audit log is never trimmed**, and it records outcomes, not attempts:
   a rejected request other than a login is not in it. Failed logins cannot
   flood it: an address is stopped after 20 in five minutes.

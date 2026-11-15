@@ -23,9 +23,10 @@ together on one bridge network (`warehouse-net`).
    openssl rand -hex 32
    ```
 
-   Set the output as `JWT_SECRET_KEY=...`. The backend refuses to start if
-   this is unset — it never runs with the insecure developer default from
-   `backend/app/core/config.py`.
+   Set the output as `JWT_SECRET_KEY=...`. Compose refuses to start if this
+   is unset, and the backend refuses to start (its log says why) while it is
+   still the placeholder from `.env.example` or shorter than 32 characters.
+   Whoever knows this secret can sign in as any user.
 
 3. Set `FRONTEND_API_BASE_URL` in `infra/.env` to where the backend is
    reachable **from the end user's browser**:

@@ -21,13 +21,15 @@ from sqlmodel import Session, select
 
 from app import main
 from app.core.config import settings
-from app.db.seed import seed_devices_from_json
+from app.db.seed import _closes_parent_loop, seed_devices_from_json
 from app.db.session import engine, init_db
 from app.models import Device, DeviceLink
+from app.schemas.device import DeviceCreate
 from app.services.device_links import delete_link, device_graph
+from app.services.incident_analysis import analyze_incidents
 from app.services.topology_graph import reachable_from_roots
 from tests.conftest import REAL_SEED_FILE, SEED_FILE
-from tests.helpers import wipe_database
+from tests.helpers import fail_after, make_status, wipe_database
 
 COMPOSE_FILE = REAL_SEED_FILE.parent / "docker-compose.yml"
 SHIPPED_LINKS = [("sw-edge-2", "sw-ot"), ("sw-edge-2", "sw-server")]
@@ -86,6 +88,21 @@ def test_the_compose_file_simulates_every_seeded_device_at_its_address():
 
     assert simulated == seeded
     assert simulated["sw-edge-2"] == "10.99.0.5"
+
+
+@pytest.mark.parametrize("seed", [REAL_SEED_FILE, SEED_FILE], ids=["shipped", "classic"])
+def test_every_seeded_device_would_be_accepted_by_the_api(seed):
+    # The seed loader does not go through the API's checks (id, lengths, type),
+    # so a seeded device must not be one the admin panel could not have made.
+    for item in json.loads(seed.read_text()):
+        DeviceCreate(
+            id=item["id"],
+            name=item["name"],
+            type=item["type"],
+            ip=item["ip"],
+            zone=item["zone"],
+            parent_id=item["parentId"],
+        )
 
 
 # --- seeding ---------------------------------------------------------------------
@@ -174,3 +191,52 @@ def test_seed_links_that_break_a_rule_are_skipped_and_the_rest_is_seeded(tmp_pat
     assert stored() == (["core", "s1", "s2"], [("s1", "s2")])
     assert "Seed link s1 -- ghost skipped: Device 'ghost' does not exist" in caplog.text
     assert "Seed link s1 -- s1 skipped: A device cannot be linked to itself" in caplog.text
+
+
+# --- a seed file whose parents form a loop -----------------------------------------
+
+
+def test_a_seed_device_that_would_close_a_parent_loop_is_skipped(tmp_path, caplog):
+    wipe_database()
+    init_db()
+    path = seed_file(
+        tmp_path,
+        [
+            entry("core"),
+            entry("a", "b"),  # stored: a parent that does not exist (yet) is allowed
+            entry("b", "a"),  # skipped: b would be under a, which is under b
+            entry("self", "self"),  # skipped: its own parent
+            entry("c", "b", links=["b"]),  # stored under the missing b; the link to it is skipped
+        ],
+    )
+
+    seed_devices_from_json(path)
+    seed_devices_from_json(path)  # the next start: the same two are skipped again
+
+    assert stored() == (["a", "c", "core"], [])
+    assert caplog.text.count("Seed device b skipped: under parent a it would be its own ancestor") == 2
+    assert caplog.text.count("Seed device self skipped: under parent self it would be its own ancestor") == 2
+
+    # What was stored is a forest again, and the analysis ends on it.
+    with Session(engine) as session:
+        devices = list(session.exec(select(Device)).all())
+    with fail_after(2):
+        incidents = analyze_incidents(devices, {"a": make_status("a", "down")})
+    assert [(incident.device.id, incident.category) for incident in incidents] == [("a", "root_cause")]
+
+
+@pytest.mark.parametrize(
+    ("device_id", "parent_id", "parents", "closes"),
+    [
+        ("x", None, {}, False),  # top level
+        ("x", "ghost", {}, False),  # a parent that does not exist
+        ("x", "x", {}, True),  # its own parent
+        ("b", "a", {"a": "b"}, True),  # "a" is already waiting under "b"
+        ("c", "b", {"b": "a", "a": "c"}, True),  # two steps up
+        ("d", "c", {"c": "b", "b": "a", "a": None}, False),  # a plain chain to a root
+        ("d", "a", {"a": "b", "b": "a"}, False),  # a loop that is stored already, without "d"
+    ],
+)
+def test_closes_parent_loop(device_id, parent_id, parents, closes):
+    with fail_after(2):
+        assert _closes_parent_loop(device_id, parent_id, parents) is closes

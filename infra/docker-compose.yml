@@ -144,7 +144,9 @@ services:
     environment:
       # REQUIRED and never the insecure dev default from config.py. The `:?`
       # interpolation fails startup if unset, so a missing infra/.env cannot
-      # silently ship with the development secret. Generate with:
+      # silently ship with the development secret. The backend itself refuses
+      # the placeholder from .env.example and anything under 32 characters
+      # (unless DEMO_MODE is true). Generate with:
       #   openssl rand -hex 32
       JWT_SECRET_KEY: '${JWT_SECRET_KEY:?set JWT_SECRET_KEY in infra/.env (see infra/.env.example)}'
       # JSON-array form is what pydantic-settings expects for the list[str]

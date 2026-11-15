@@ -1,6 +1,8 @@
 """Settings API schemas for the single AppSettings singleton row."""
 
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from app.schemas.anomaly import DetectorKind
 
@@ -32,10 +34,13 @@ class SettingsUpdate(BaseModel):
     """PATCH body: every field optional so callers can send partial updates.
 
     ``id`` is intentionally excluded -- the singleton row is not addressable
-    and can never be re-pointed.
+    and can never be re-pointed. The ranges of the numbers are checked in
+    app/routers/settings.py, where the message can name the field.
     """
 
-    site_name: str | None = None
+    site_name: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] | None
+    ) = None
     poll_interval_seconds: float | None = None
     latency_warn_ms: float | None = None
     latency_crit_ms: float | None = None

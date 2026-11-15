@@ -11,10 +11,11 @@
 import random
 from collections.abc import Iterable
 
+from app.models.device import Device
 from app.schemas.incident import IncidentOut
 from app.services.incident_analysis import analyze_incidents
 from app.services.ping_engine import DeviceStatus
-from tests.helpers import make_status, seed_devices
+from tests.helpers import fail_after, make_status, seed_devices
 
 OT_CHILDREN = ["ap-aisle-1", "ap-aisle-2", "hmi-panel-1", "plc-conveyor-1", "scanner-1"]
 OT_SUBTREE = ["sw-ot", *OT_CHILDREN]
@@ -217,3 +218,78 @@ def test_down_device_under_a_merely_degraded_parent_is_collateral():
 
     assert summary(incidents) == [("sw-ot", "root_cause"), ("plc-conveyor-1", "collateral")]
     assert downstream(incidents[0]) == ["plc-conveyor-1"]
+
+
+# --- parent loops ----------------------------------------------------------------
+# The API and the seed loader both refuse a loop of parents, so this is damaged
+# data. The analysis has to end on it all the same: it runs in every poll cycle,
+# and it used to walk such a loop for ever. ``fail_after`` turns that into a
+# failing test instead of a suite that hangs.
+
+
+def _device(device_id: str, parent_id: str | None) -> Device:
+    return Device(id=device_id, name=device_id, type="switch", ip="10.0.0.1", zone="lab", parent_id=parent_id)
+
+
+def _statuses(**status_of: str) -> dict[str, DeviceStatus]:
+    return {device_id: make_status(device_id, status) for device_id, status in status_of.items()}
+
+
+def test_two_devices_that_are_each_others_parent_do_not_hang_the_analysis():
+    loop = [_device("a", "b"), _device("b", "a")]
+
+    with fail_after(2):
+        one_down = analyze_incidents(loop, _statuses(a="down", b="healthy"))
+        both_down = analyze_incidents(loop, _statuses(a="down", b="down"))
+
+    # "a" has a healthy parent: a root cause, with nothing unhealthy below it.
+    assert summary(one_down) == [("a", "root_cause")]
+    assert downstream(one_down[0]) == []
+    # Each has an unhealthy parent, so the tree rule calls both collateral.
+    assert summary(both_down) == [("a", "collateral"), ("b", "collateral")]
+
+
+def test_a_longer_loop_with_a_device_hanging_off_it_is_walked_once():
+    # Parents: a under b, b under c, c under a (the loop), and t under c.
+    devices = [_device("a", "b"), _device("b", "c"), _device("c", "a"), _device("t", "c")]
+
+    with fail_after(2):
+        incidents = analyze_incidents(devices, _statuses(a="down", b="healthy", c="down", t="down"))
+
+    # The walk below "a" goes c, t, b and stops when it is back at "a".
+    assert summary(incidents) == [("a", "root_cause"), ("c", "collateral"), ("t", "collateral")]
+    assert downstream(incidents[0]) == ["c", "t"]
+
+
+def test_the_walk_ends_even_when_an_id_is_in_the_list_twice():
+    # The database cannot hold this (the id is the primary key), but the
+    # function is pure and has to end on whatever it is given. Here the loop
+    # x, y, x never comes back to the root cause "r", so remembering only the
+    # start of the walk would not be enough.
+    devices = [_device("r", None), _device("x", "r"), _device("y", "x"), _device("x", "y")]
+
+    with fail_after(2):
+        incidents = analyze_incidents(devices, _statuses(r="down", x="down", y="down"))
+
+    assert [incident.device.id for incident in incidents if incident.category == "root_cause"] == ["r"]
+    assert downstream(incidents[0]) == ["x", "y"]
+
+
+def test_any_parent_map_ends_and_classifies_every_unhealthy_device_exactly_once():
+    rng = random.Random(20261115)
+
+    with fail_after(30):
+        for _ in range(500):
+            ids = [f"d{number}" for number in range(rng.randint(1, 10))]
+            # Any device as parent, itself included: trees, loops and mixtures.
+            devices = [_device(device_id, rng.choice([None, *ids])) for device_id in ids]
+            statuses = _statuses(**{i: rng.choice(["healthy", "down", "degraded", "unknown"]) for i in ids})
+
+            incidents = analyze_incidents(devices, statuses)
+
+            unhealthy = sorted(i for i in ids if statuses[i].status in ("down", "degraded"))
+            assert sorted(incident.device.id for incident in incidents) == unhealthy
+            for incident in incidents:
+                below = [device.id for device in incident.downstream_affected]
+                assert len(below) == len(set(below)), "a device is listed twice"
+                assert incident.device.id not in below, "a root cause is listed below itself"

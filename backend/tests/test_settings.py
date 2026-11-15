@@ -1,9 +1,15 @@
 """Monitoring settings API. The "applies on the next poll cycle" behaviour is
 covered in test_poll_loop.py."""
 
-import pytest
+import json
 
+import pytest
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+
+from app import main
 from app.core.config import settings
+from app.schemas.settings import SettingsUpdate
 
 DEFAULTS = {
     "id": 1,
@@ -319,3 +325,149 @@ def test_anomaly_settings_out_of_range_are_rejected(client, admin_headers, field
 def test_anomaly_settings_of_the_wrong_kind_are_rejected(client, admin_headers, fields):
     assert _patch(client, admin_headers, **fields).status_code == 422
     assert _settings(client, admin_headers) == DEFAULTS
+
+
+# --- values that would stop the monitoring or break this endpoint -------------------
+
+DECIMAL_FIELDS = [
+    "poll_interval_seconds",
+    "latency_warn_ms",
+    "latency_crit_ms",
+    "loss_warn_pct",
+    "jitter_warn_ms",
+    "anomaly_k",
+    "anomaly_alpha",
+]
+
+
+def _patch_raw(client, admin_headers, body: str):
+    """PATCH a body the JSON encoder refuses to write (NaN, Infinity)."""
+    headers = {**admin_headers, "Content-Type": "application/json"}
+    return client.patch("/api/settings", headers=headers, content=body)
+
+
+def test_the_list_of_decimal_settings_is_complete():
+    decimal = [name for name, field in SettingsUpdate.model_fields.items() if field.annotation == (float | None)]
+
+    assert decimal == DECIMAL_FIELDS
+
+
+@pytest.mark.parametrize("field", DECIMAL_FIELDS)
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_a_number_that_is_not_finite_is_rejected_and_nothing_is_stored(client, admin_headers, field, value):
+    # A stored Infinity used to make every later GET /api/settings answer 500.
+    response = _patch_raw(client, admin_headers, f'{{"{field}": {value}}}')
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": f"{field} must be a finite number"}
+    assert _settings(client, admin_headers) == DEFAULTS  # still readable, and unchanged
+
+
+@pytest.mark.parametrize("field", ["flap_threshold", "failure_threshold", "pings_per_cycle", "anomaly_window"])
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_a_whole_number_that_is_not_finite_is_a_422_not_a_500(client, admin_headers, field, value):
+    # The schema rejects these. FastAPI's 422 repeats the input, which it
+    # could not write as JSON: see request_validation_error in app/main.py.
+    response = _patch_raw(client, admin_headers, f'{{"{field}": {value}}}')
+
+    assert response.status_code == 422
+    (error,) = response.json()["detail"]
+    assert error["loc"] == ["body", field] and "input" not in error
+    assert _settings(client, admin_headers) == DEFAULTS
+
+
+# --- the 422 answer itself (request_validation_error in app/main.py) ----------------
+
+
+def _rejected(rejected_input: object) -> RequestValidationError:
+    return RequestValidationError(
+        [{"type": "int_parsing", "loc": ("body", "flap_threshold"), "msg": "not a whole number", "input": rejected_input}]
+    )
+
+
+async def test_for_ordinary_input_the_422_answer_is_exactly_fastapis_own():
+    ours = await main.request_validation_error(None, _rejected(2.5))
+    theirs = await request_validation_exception_handler(None, _rejected(2.5))
+
+    assert (ours.status_code, ours.body) == (theirs.status_code, theirs.body)
+    assert json.loads(ours.body)["detail"][0]["input"] == 2.5
+
+
+@pytest.mark.parametrize("kind", ["nan", "infinity", "half a surrogate pair", "bytes that are not text", "too deep"])
+async def test_an_input_that_cannot_be_written_back_is_left_out_of_the_422(kind):
+    too_deep: list = []
+    for _ in range(5000):  # far more levels than Python will recurse into
+        too_deep = [too_deep]
+    unwritable = {
+        "nan": float("nan"),
+        "infinity": float("inf"),
+        "half a surrogate pair": "\ud800",
+        "bytes that are not text": b"\xff\xfe",
+        "too deep": too_deep,
+    }[kind]
+
+    answer = await main.request_validation_error(None, _rejected(unwritable))
+
+    assert answer.status_code == 422
+    assert json.loads(answer.body) == {
+        "detail": [{"type": "int_parsing", "loc": ["body", "flap_threshold"], "msg": "not a whole number"}]
+    }
+
+
+@pytest.mark.parametrize("too_long", [3600.5, 86400, 1e12])
+def test_poll_interval_has_a_one_hour_maximum(client, admin_headers, too_long):
+    # The loop sleeps a whole interval before it reads the settings again, so
+    # a huge one stopped the monitoring until the backend was restarted.
+    response = _patch(client, admin_headers, poll_interval_seconds=too_long)
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "poll_interval_seconds must be at most 3600.0 seconds"}
+    assert _settings(client, admin_headers) == DEFAULTS
+
+
+@pytest.mark.parametrize(
+    ("fields", "detail"),
+    [
+        ({"latency_warn_ms": 0}, "latency_warn_ms must be above 0"),
+        ({"latency_warn_ms": -5}, "latency_warn_ms must be above 0"),
+        ({"latency_crit_ms": 0}, "latency_crit_ms must be above 0"),
+        ({"latency_warn_ms": -5, "latency_crit_ms": -1}, "latency_warn_ms must be above 0"),
+        ({"flap_threshold": 0}, "flap_threshold must be between 1 and 1000"),
+        ({"flap_threshold": -3}, "flap_threshold must be between 1 and 1000"),
+        ({"flap_threshold": 1001}, "flap_threshold must be between 1 and 1000"),
+        ({"flap_threshold": 10**30}, "flap_threshold must be between 1 and 1000"),
+    ],
+)
+def test_thresholds_that_make_no_sense_are_rejected(client, admin_headers, fields, detail):
+    response = _patch(client, admin_headers, **fields)
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": detail}
+    assert _settings(client, admin_headers) == DEFAULTS  # nothing was saved
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"poll_interval_seconds": 3600},
+        {"latency_warn_ms": 0.1},
+        {"flap_threshold": 1},
+        {"flap_threshold": 1000},
+    ],
+)
+def test_the_ends_of_those_ranges_are_accepted(client, admin_headers, fields):
+    response = _patch(client, admin_headers, **fields)
+
+    assert response.status_code == 200
+    assert response.json() == {**DEFAULTS, **fields}
+
+
+@pytest.mark.parametrize("site_name", ["", "   ", "x" * 101])
+def test_site_name_must_be_1_to_100_characters(client, admin_headers, site_name):
+    assert _patch(client, admin_headers, site_name=site_name).status_code == 422
+    assert _settings(client, admin_headers) == DEFAULTS
+
+
+def test_site_name_is_trimmed_and_may_be_100_characters_long(client, admin_headers):
+    assert _patch(client, admin_headers, site_name="  Plant 2  ").json()["site_name"] == "Plant 2"
+    assert _patch(client, admin_headers, site_name="x" * 100).status_code == 200

@@ -34,6 +34,25 @@ def _topological_order(devices: list[dict]) -> list[dict]:
     return ordered
 
 
+def _closes_parent_loop(
+    device_id: str, parent_id: str | None, parents: dict[str, str | None]
+) -> bool:
+    """Would ``device_id`` under ``parent_id`` be its own ancestor?
+
+    ``parents`` maps every device stored so far to its parent. The walk up
+    ends at a top-level device, at a parent that does not exist, or (``seen``)
+    on a loop that is in the data already and does not involve this device.
+    """
+    seen: set[str] = set()
+    current = parent_id
+    while current is not None and current not in seen:
+        if current == device_id:
+            return True
+        seen.add(current)
+        current = parents.get(current)
+    return False
+
+
 def seed_devices_from_json(json_path: str) -> None:
     """Seed devices, and the extra links between them, from the JSON
     topology file if present.
@@ -45,7 +64,8 @@ def seed_devices_from_json(json_path: str) -> None:
     Seeding is idempotent, so it runs at every startup: a device or link that
     is already stored is left alone, and only what is missing is added. A link
     that breaks a rule (see app/services/device_links.py) is skipped with a
-    warning rather than stopping the startup.
+    warning rather than stopping the startup, and so is a device that would
+    close a loop of parents: the incident analysis expects a tree.
 
     A missing seed file is NOT a startup error: a deployment may seed devices
     via the admin API instead of a mounted file, so skip gracefully when the
@@ -63,10 +83,19 @@ def seed_devices_from_json(json_path: str) -> None:
     skipped = 0
 
     with Session(engine) as session:
-        existing_ids = set(session.exec(select(Device.id)).all())
+        # Every stored device and its parent, kept current while seeding.
+        parents = {device.id: device.parent_id for device in session.exec(select(Device)).all()}
 
         for item in _topological_order(devices_data):
-            if item["id"] in existing_ids:
+            if item["id"] in parents:
+                skipped += 1
+                continue
+            if _closes_parent_loop(item["id"], item.get("parentId"), parents):
+                logger.warning(
+                    "Seed device %s skipped: under parent %s it would be its own ancestor",
+                    item["id"],
+                    item.get("parentId"),
+                )
                 skipped += 1
                 continue
 
@@ -81,13 +110,12 @@ def seed_devices_from_json(json_path: str) -> None:
                 )
             )
             session.flush()
-            existing_ids.add(item["id"])
+            parents[item["id"]] = item.get("parentId")
             inserted += 1
 
         # Links come after the devices, so both ends of every link exist.
         links_inserted = 0
         links_skipped = 0
-        parents = {device.id: device.parent_id for device in session.exec(select(Device)).all()}
         stored = {
             (link.device_a_id, link.device_b_id) for link in session.exec(select(DeviceLink)).all()
         }

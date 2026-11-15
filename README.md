@@ -201,7 +201,8 @@ user's browser straight to the backend.
 ## Backend (FastAPI)
 
 The backend is a single FastAPI app (`backend/app/main.py`) that, at startup
-(`lifespan`), brings the SQLite schema up to date (see
+(`lifespan`), checks its signing secret (see [Security](#security)), brings
+the SQLite schema up to date (see
 [Database migrations](#database-migrations)), seeds devices from
 `infra/devices.seed.json`, seeds default users and settings, refills its
 in-memory caches from the database, and launches two background `asyncio`
@@ -407,6 +408,11 @@ Each root cause carries the list of `downstream_affected` devices it took down,
 and the frontend renders these as incident cards with a guided-fix playbook
 stepper linked from the static `backend/app/data/playbooks.py`.
 
+The parents have to form a tree. The API refuses a change that would close a
+loop, and the seed loader skips a device that would. The walk below a root
+cause also visits each device only once, so even a loop that is already in
+the data cannot keep it going for ever.
+
 #### With redundant links
 
 The rule above looks only at a device's parent. That is right for a tree,
@@ -580,6 +586,21 @@ wrong passwords in 5 minutes for one username from one address (or 20 from
 one address) the login answers 429 with a `Retry-After` header. See
 [Security](#security).
 
+`POST /api/devices` and `PATCH /api/devices/{id}` check what they store. An
+`id` is 1 to 64 letters, digits, `.`, `_` or `-`, starting with a letter or
+digit: it is part of the URL and of the simulated container's name
+(`sim-<id>`). `name` and `zone` are 1 to 100 characters, `ip` is 1 to 255,
+`notes` at most 2000, and `ping_port` is 1 to 65535.
+
+`PATCH /api/settings` takes a `poll_interval_seconds` of 5 to 3600, latency
+thresholds above 0 with `latency_warn_ms` below `latency_crit_ms`, a
+`flap_threshold` of 1 to 1000 and a `site_name` of 1 to 100 characters. The
+ranges of the probe, debounce and anomaly settings are in their sections. A
+value outside its range is a 422 that names the field, and nothing is saved.
+
+A number that is not finite (`NaN`, `Infinity`) is a 422 in every field an
+endpoint reads.
+
 `GET /api/anomalies` takes `device_id` (optional) and `limit` (1–200, default
 50) and returns
 `[{id, device_id, metric, detector, started_at, ended_at, value, expected, score}]`,
@@ -698,7 +719,9 @@ Links are managed in the Admin panel (Links tab) or through `/api/links`.
 They can also be seeded: a device in `infra/devices.seed.json` may carry
 `"links"`, the ids of the devices it is linked to besides its parent.
 Seeding runs at every start and is idempotent: a seeded device or link that
-is missing is added, and nothing is duplicated or overwritten.
+is missing is added, and nothing is duplicated or overwritten. An entry that
+breaks a rule (a link that is not allowed, a device that would be its own
+ancestor) is skipped with a warning in the log.
 
 Two endpoints expose the engine:
 
@@ -791,6 +814,11 @@ and a fixed threshold on synthetic traces with known anomalies. In short, from
 The threat model, the details and the known limitations are in
 [docs/security.md](docs/security.md). In short:
 
+- **Signing secret.** Login tokens are signed with `JWT_SECRET_KEY`, and
+  whoever knows it can sign a token for any account without a password. The
+  backend refuses to start while it is one of the placeholders from the
+  example files, or shorter than 32 characters. Generate one with
+  `openssl rand -hex 32`.
 - **First login.** A new database gets two accounts, `admin` and `viewer`.
   Their first passwords come from `ADMIN_INITIAL_PASSWORD` and
   `VIEWER_INITIAL_PASSWORD`; one that is not set is generated and written to
@@ -819,7 +847,9 @@ The threat model, the details and the known limitations are in
 > accounts with the passwords `admin` / `admin123` and `viewer` / `viewer123`
 > and switches the forced password change off. It is **off by default**. It
 > only chooses the passwords of a new database and never overwrites existing
-> ones: to switch a database to the demo credentials, recreate it.
+> ones: to switch a database to the demo credentials, recreate it. It is also
+> the only mode that starts on a placeholder signing secret, with a warning
+> in the log.
 
 ## Frontend (React)
 
@@ -1028,9 +1058,14 @@ first login works.
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # set JWT_SECRET_KEY / CORS_ORIGINS / thresholds
+cp .env.example .env   # then set JWT_SECRET_KEY (see below), CORS_ORIGINS, thresholds
 uvicorn app.main:app --reload --port 8000
 ```
+
+The backend does not start on the placeholder `JWT_SECRET_KEY` that
+`.env.example` contains. Put your own in `.env`, for example the output of
+`python -c "import secrets; print(secrets.token_hex(32))"`, or use
+`DEMO_MODE=True` for a throwaway local setup (below).
 
 Requires `CAP_NET_RAW` (or root) for privileged raw-ICMP pings. For
 rootless local development, set `PING_PRIVILEGED=False` in `.env` to use
@@ -1306,7 +1341,8 @@ one with its reason at the end of the run. There are none at the moment.
 
 The suite runs with `DEMO_MODE=true`, so that it can log in as `admin` /
 `admin123`; `test_security.py` switches it off to test the forced password
-change and how the default accounts are seeded.
+change, how the default accounts are seeded, and the refusal to start on a
+placeholder signing secret.
 
 The suite is seeded with a frozen copy of the original 11-device tree
 (`backend/tests/data/classic_tree.seed.json`), so tests of the monitoring

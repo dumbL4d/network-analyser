@@ -30,7 +30,8 @@ os.environ.update(
         "DATABASE_PATH": str(TEST_DB_PATH),
         "SEED_PATH": str(SEED_FILE),
         "POLL_ENABLED": "false",
-        "JWT_SECRET_KEY": "test-only-secret",
+        # Long enough to pass the startup check (see test_security.py).
+        "JWT_SECRET_KEY": "test-only-secret-not-used-anywhere-else",
         "JWT_ALGORITHM": "HS256",
         "JWT_EXPIRE_MINUTES": "480",
         # The suite logs in as admin / admin123 and viewer / viewer123. What

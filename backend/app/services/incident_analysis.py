@@ -14,6 +14,10 @@ The original rule, unchanged. A device is judged against its parent:
 * **collateral** -- the parent is also down/degraded, so this device went down
   as a consequence of an outage higher up the tree.
 
+The parents are expected to form a tree. If they form a loop anyway (the API
+and the seed loader both refuse one, so this is damaged data), the walk below
+a root cause still ends: each device is visited once.
+
 WITH LINKS: tree edges plus ``device_link`` rows
 ------------------------------------------------
 A device can now have more than one way up, so looking at its parent is not
@@ -98,9 +102,15 @@ def analyze_incidents(
     def downstream_affected(root_id: str) -> list[Device]:
         """Every descendant of ``root_id`` whose status is also unhealthy."""
         affected: list[Device] = []
+        # In a tree nothing is reached twice. ``seen`` is for a parent loop in
+        # the data (a hand-edited seed file): without it this walk never ends.
+        seen = {root_id}
         stack = list(children.get(root_id, []))
         while stack:
             node = stack.pop()
+            if node.id in seen:
+                continue
+            seen.add(node.id)
             if impacted(node):
                 affected.append(node)
             stack.extend(children.get(node.id, []))

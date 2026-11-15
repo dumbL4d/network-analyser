@@ -4,6 +4,7 @@ Token issuance/validation lives here; wiring the dependencies onto routes is a
 separate ticket (auth dependencies are defined in ``app.core.deps``).
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from jose import jwt
@@ -12,7 +13,56 @@ from passlib.exc import PasswordValueError
 
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# The signing secrets this repository ships as examples: the default in
+# config.py (also in backend/.env.example) and the one in infra/.env.example.
+# Anyone can read them, so anyone could sign a token with them.
+PLACEHOLDER_JWT_SECRETS = frozenset(
+    {"CHANGE_ME_DEV_ONLY_INSECURE_DEFAULT", "generate_me_with_openssl_rand_hex_32"}
+)
+# HS256 wants a key of at least 256 bits; `openssl rand -hex 32` gives 64
+# characters.
+MIN_JWT_SECRET_LENGTH = 32
+
+
+def jwt_secret_problem(secret: str) -> str | None:
+    """Why ``secret`` must not sign tokens, or None when it may. Pure."""
+    if secret in PLACEHOLDER_JWT_SECRETS:
+        return "JWT_SECRET_KEY is still a placeholder from the example files, which anyone can read"
+    if len(secret) < MIN_JWT_SECRET_LENGTH:
+        return (
+            f"JWT_SECRET_KEY is {len(secret)} characters long, and it has to be "
+            f"at least {MIN_JWT_SECRET_LENGTH}"
+        )
+    return None
+
+
+def require_private_jwt_secret() -> None:
+    """Refuse to start on a signing secret that others can know or guess.
+
+    Whoever has the secret can sign a token for any account, admin included,
+    without a password. DEMO_MODE is the one exception: its passwords are
+    public anyway, so it starts with a warning.
+
+    Called first thing at startup rather than when the settings are loaded, so
+    tools that only need the database path (alembic, the scripts) still run.
+    """
+    problem = jwt_secret_problem(settings.JWT_SECRET_KEY)
+    if problem is None:
+        return
+    if not settings.DEMO_MODE:
+        raise RuntimeError(
+            f"Refusing to start: {problem}. Generate one with `openssl rand -hex 32` "
+            "and set it as JWT_SECRET_KEY."
+        )
+    logger.warning(
+        "%s. Starting anyway because DEMO_MODE is on: whoever knows the secret "
+        "can sign in as any user without a password.",
+        problem,
+    )
 
 
 def hash_password(plain: str) -> str:

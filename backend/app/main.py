@@ -4,12 +4,16 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
 from app.core.deps import get_current_user, get_stream_user
+from app.core.security import require_private_jwt_secret
 from app.db.seed import seed_devices_from_json
 from app.db.seed_settings import seed_default_settings
 from app.db.seed_users import seed_default_users
@@ -100,6 +104,8 @@ def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Before anything is migrated or seeded: no start on a public signing secret.
+    require_private_jwt_secret()
     init_db()
     seed_devices_from_json(str(resolve_seed_path()))
     seed_default_users()
@@ -145,6 +151,24 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's usual 422 answer, also when the rejected input cannot be echoed.
+
+    The 422 repeats the input it rejected, and some inputs cannot be written
+    into a response: NaN and Infinity (Python's JSON parser accepts them, its
+    writer does not), a string with half a surrogate pair, bytes that are not
+    text, a body nested a thousand levels deep. Writing the answer then
+    failed, and the caller got a 500. Such an answer now leaves the input out.
+    """
+    try:
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+    except (ValueError, RecursionError):  # the two Unicode errors are ValueErrors
+        slim = [{key: error[key] for key in ("type", "loc", "msg")} for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": slim})
+
 
 app.include_router(analysis_router)
 app.include_router(anomalies_router)

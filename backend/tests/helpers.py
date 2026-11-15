@@ -1,7 +1,9 @@
 """Plain helpers shared by the test modules (fixtures live in conftest.py)."""
 
 import json
-from collections.abc import Callable
+import signal
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +39,31 @@ def make_status(
         latency_ms=latency_ms,
         timestamp=timestamp or datetime.now(timezone.utc),
     )
+
+
+@contextmanager
+def fail_after(seconds: float) -> Iterator[None]:
+    """Fail the test if the block is still running after ``seconds``.
+
+    For code whose bug would be that it never returns: without this, such a
+    regression hangs the whole suite instead of failing one test. It relies on
+    SIGALRM in the main thread, which macOS and Linux have (that is where the
+    suite runs). Where there is none, the block simply runs unguarded.
+    """
+    if not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def too_slow(signum: int, frame: object) -> None:
+        raise TimeoutError(f"still running after {seconds} s")
+
+    previous = signal.signal(signal.SIGALRM, too_slow)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def stored(table: Table, *columns: str) -> list[tuple]:

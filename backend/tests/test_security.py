@@ -1,20 +1,28 @@
 """Security hardening: the forced password change, how the default accounts
-are seeded, tokens of accounts that are gone, login throttling over HTTP, and
-CORS. The limiter itself is in test_rate_limit.py, stream tickets in
-test_stream_tickets.py and the audit log in test_audit.py."""
+are seeded, tokens of accounts that are gone, login throttling over HTTP,
+CORS, and the signing secret. The limiter itself is in test_rate_limit.py,
+stream tickets in test_stream_tickets.py and the audit log in test_audit.py."""
 
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy import inspect
 from sqlmodel import Session, select
 
 from app.core.config import Settings, settings
-from app.core.security import hash_password, verify_password
+from app.core.security import (
+    MIN_JWT_SECRET_LENGTH,
+    PLACEHOLDER_JWT_SECRETS,
+    hash_password,
+    jwt_secret_problem,
+    verify_password,
+)
 from app.db.seed_users import seed_default_users
 from app.db.session import engine
 from app.main import app
@@ -22,6 +30,7 @@ from app.models.user import User
 from app.routers import auth
 from app.services.rate_limit import login_throttle
 from app.services.stream_tickets import stream_tickets
+from tests.helpers import wipe_database
 from tests.test_auth import _bearer, _token
 from tests.test_rate_limit import FakeClock
 
@@ -658,3 +667,75 @@ def test_exact_origins_are_accepted():
 
     assert Settings(CORS_ORIGINS=origins).CORS_ORIGINS == origins
     assert Settings(CORS_ORIGINS=[]).CORS_ORIGINS == []  # no cross-origin access at all
+
+
+# --- the signing secret ---------------------------------------------------------
+# Whoever knows JWT_SECRET_KEY can sign a token for any account without a
+# password. The repository ships two example values, and the backend used to
+# start on them without a word.
+
+REPO = Path(__file__).resolve().parents[2]
+SHIPPED_SECRET = "CHANGE_ME_DEV_ONLY_INSECURE_DEFAULT"
+
+
+@pytest.mark.parametrize("secret", [*sorted(PLACEHOLDER_JWT_SECRETS), "", "short", "x" * (MIN_JWT_SECRET_LENGTH - 1)])
+def test_a_placeholder_or_a_short_secret_is_a_problem(secret):
+    assert jwt_secret_problem(secret) is not None
+
+
+@pytest.mark.parametrize("secret", ["x" * MIN_JWT_SECRET_LENGTH, "0f" * 32])
+def test_a_long_secret_of_ones_own_is_not(secret):
+    assert jwt_secret_problem(secret) is None
+
+
+def test_every_secret_the_repository_ships_is_on_the_placeholder_list():
+    shipped = {Settings.model_fields["JWT_SECRET_KEY"].default}
+    for example in (REPO / "backend" / ".env.example", REPO / "infra" / ".env.example"):
+        values = re.findall(r"^JWT_SECRET_KEY=(.*)$", example.read_text(), flags=re.MULTILINE)
+        assert len(values) == 1, f"{example} should set JWT_SECRET_KEY exactly once"
+        shipped.update(values)
+
+    # Change an example file and this fails until the list follows.
+    assert shipped == PLACEHOLDER_JWT_SECRETS
+
+
+@pytest.fixture
+def shipped_secret(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "JWT_SECRET_KEY", SHIPPED_SECRET)
+
+
+def test_the_backend_refuses_to_start_on_a_shipped_secret(secure, shipped_secret):
+    wipe_database()
+
+    with pytest.raises(RuntimeError, match="Refusing to start: JWT_SECRET_KEY is still a placeholder"):
+        with TestClient(app):
+            pass
+
+    # It stopped before the first migration: nothing was created or seeded.
+    assert inspect(engine).get_table_names() == []
+
+
+def test_the_backend_refuses_to_start_on_a_short_secret(secure, monkeypatch):
+    monkeypatch.setattr(settings, "JWT_SECRET_KEY", "x" * 31)
+
+    with pytest.raises(RuntimeError, match="is 31 characters long, and it has to be at least 32"):
+        with TestClient(app):
+            pass
+
+
+def test_demo_mode_starts_on_a_shipped_secret_and_says_so(db, shipped_secret, caplog):
+    assert settings.DEMO_MODE is True  # pinned in conftest.py
+
+    with caplog.at_level(logging.WARNING, logger="app.core.security"), TestClient(app) as started:
+        assert started.get("/api/health").status_code == 200
+
+    warnings = [record.message for record in caplog.records if record.name == "app.core.security"]
+    assert len(warnings) == 1
+    assert "placeholder" in warnings[0] and "Starting anyway because DEMO_MODE is on" in warnings[0]
+
+
+def test_a_secret_of_ones_own_starts_without_that_warning(secure, caplog):
+    with caplog.at_level(logging.WARNING, logger="app.core.security"), TestClient(app) as started:
+        assert started.get("/api/health").status_code == 200
+
+    assert [record for record in caplog.records if record.name == "app.core.security"] == []

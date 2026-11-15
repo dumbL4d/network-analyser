@@ -50,8 +50,9 @@ class Settings(BaseSettings):
     CHAOS_AGENT_TOKEN: str | None = None
 
     # JWT auth
-    # WARNING: the insecure default below MUST be overridden via env var in any
-    # real deployment. It exists ONLY for local development convenience.
+    # The default below is a placeholder, not a secret. The backend refuses to
+    # start on it, or on anything shorter than 32 characters, unless DEMO_MODE
+    # is on (see app.core.security.require_private_jwt_secret).
     JWT_SECRET_KEY: str = "CHANGE_ME_DEV_ONLY_INSECURE_DEFAULT"
     JWT_ALGORITHM: str = "HS256"
     # How long a login lasts. There are no refresh tokens: after this the user

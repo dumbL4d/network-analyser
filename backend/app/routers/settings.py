@@ -5,6 +5,8 @@ interval and latency thresholds); PATCH is reserved for admins -- this router
 is the FIRST use of ``require_role("admin")`` in the codebase.
 """
 
+import math
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
@@ -28,6 +30,11 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 # Matches the original tool's documented minimum poll interval.
 MIN_POLL_INTERVAL_SECONDS = 5.0
+# The loop sleeps for the whole interval before it reads the settings again,
+# so a huge value would stop monitoring until a restart. An hour is the cap.
+MAX_POLL_INTERVAL_SECONDS = 3600.0
+# How many status changes mark a device as flapping on the Stability page.
+FLAP_THRESHOLD_RANGE = (1, 1000)
 
 # Anomaly detection. k: standard deviations above the baseline. m: readings in
 # a row above it. alpha: how fast the EWMA detector forgets. window: how many
@@ -74,6 +81,13 @@ def update_settings(
     # the intent obvious: nulls are "not provided", never "reset to default".
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
 
+    # NaN and Infinity first: they slip through comparisons (NaN fails every
+    # one, Infinity is above every minimum) and cannot be sent back as JSON,
+    # so a stored one would break GET /api/settings.
+    for field, value in updates.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            raise HTTPException(status_code=422, detail=f"{field} must be a finite number")
+
     if (
         "poll_interval_seconds" in updates
         and updates["poll_interval_seconds"] < MIN_POLL_INTERVAL_SECONDS
@@ -85,6 +99,18 @@ def update_settings(
                 f"{MIN_POLL_INTERVAL_SECONDS} seconds"
             ),
         )
+    if (
+        "poll_interval_seconds" in updates
+        and updates["poll_interval_seconds"] > MAX_POLL_INTERVAL_SECONDS
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"poll_interval_seconds must be at most {MAX_POLL_INTERVAL_SECONDS} seconds",
+        )
+
+    for field in ("latency_warn_ms", "latency_crit_ms"):
+        if field in updates and updates[field] <= 0:
+            raise HTTPException(status_code=422, detail=f"{field} must be above 0")
 
     # Validate the EFFECTIVE thresholds: incoming values over stored ones. This
     # makes a single-field patch (e.g. only latency_crit_ms) compare against the
@@ -109,6 +135,7 @@ def update_settings(
     # Probing (see app.services.ping_engine) and anomaly detection (see
     # app.services.anomaly): each value in its range ...
     ranges = {
+        "flap_threshold": FLAP_THRESHOLD_RANGE,
         "pings_per_cycle": (MIN_PINGS_PER_CYCLE, MAX_PINGS_PER_CYCLE),
         "ping_gap_ms": (MIN_PING_GAP_MS, MAX_PING_GAP_MS),
         "anomaly_k": ANOMALY_K_RANGE,
