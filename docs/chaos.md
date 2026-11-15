@@ -14,7 +14,7 @@ behind it unreachable. On real hardware it would.
 So a failure is carried out in two steps:
 
 1. The backend works out what the failure cuts off. It uses the graph engine
-   (see "Algorithms" in the [README](../README.md)): given the failed devices,
+   (see [algorithms.md](algorithms.md#the-graph-engine)): given the failed devices,
    which other devices lose every path to a root?
 2. The failed devices **and** everything they cut off are stopped.
 
@@ -142,8 +142,9 @@ Linux host `sudo modprobe sch_netem` loads it.
 | `flapping-plc`        | Switches `plc-conveyor-1` off and on every 80 s for about 7 minutes. | Stability: the PLC climbs the flap ranking. Incidents: it opens and resolves.   |
 | `degraded-uplink`     | Adds 200 ms delay, 40 ms jitter and 2% loss to `sw-edge`.            | Topology: `sw-edge` turns degraded (latency above the warning threshold).       |
 
-Allow about three poll intervals (30 s by default) for a failure to be
-confirmed, and two for a recovery: the debouncer waits for polls to agree.
+Allow about a minute with the default settings for a failure to be confirmed
+(three polls, each slowed down by the ping timeouts of the stopped devices),
+and about 20 seconds for a recovery: the debouncer waits for polls to agree.
 That is also why a flap must be slow to be seen. A device that is off for
 less than three polls never becomes "down" at all.
 

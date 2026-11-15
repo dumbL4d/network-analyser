@@ -1,7 +1,7 @@
 """Debouncing (hysteresis) of device status.
 
 The ping engine classifies every device once per poll cycle. That *raw* result
-is noisy: one lost ICMP packet reads as "down". This module turns the stream of
+is noisy: one cycle of lost packets reads as "degraded" or "down". This module turns the stream of
 raw results into a *confirmed* status that changes only when several polls in a
 row agree.
 

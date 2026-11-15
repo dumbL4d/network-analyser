@@ -1,7 +1,7 @@
 """Password hashing (bcrypt) and JWT access-token helpers.
 
-Token issuance/validation lives here; wiring the dependencies onto routes is a
-separate ticket (auth dependencies are defined in ``app.core.deps``).
+Token issuance/validation lives here; the auth dependencies the routes use
+are in ``app.core.deps``.
 """
 
 import logging

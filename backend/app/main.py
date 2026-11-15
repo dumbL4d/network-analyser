@@ -44,8 +44,6 @@ from app.services.stream_tickets import stream_tickets
 
 logging.basicConfig(level=logging.INFO)
 
-SEED_PATH = Path(__file__).resolve().parents[2] / "infra" / "devices.seed.json"
-
 
 def resolve_seed_path() -> Path:
     """Locate the devices seed JSON with production container deploy in mind.

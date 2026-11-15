@@ -32,7 +32,7 @@ import type {
 // Vite env vars are compile-time (embedded into the static JS bundle at build
 // time -- a plain SPA has no runtime environment to read from), so the Docker
 // image bakes VITE_API_BASE_URL in via a build ARG. The default keeps the
-// local `npm run dev` workflow from every earlier ticket working unchanged.
+// local `npm run dev` workflow working without any configuration.
 // See frontend/.env.example for deployment guidance.
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
@@ -170,7 +170,7 @@ async function request<T>(
   return (await response.json()) as T
 }
 
-// --- Topology / monitoring (Ticket 2.x) -------------------------------------
+// --- Topology / monitoring ---------------------------------------------------
 
 export function fetchDevices(): Promise<DeviceOut[]> {
   return request<DeviceOut[]>('/api/devices', { authenticated: true })
@@ -202,7 +202,7 @@ export function fetchFlapCounts(): Promise<FlapCountOut[]> {
   return request<FlapCountOut[]>('/api/flaps', { authenticated: true })
 }
 
-// --- Incidents / playbooks (Ticket 5.2/5.3) ---------------------------------
+// --- Incidents / playbooks ----------------------------------------------------
 
 /** Live root-cause/collateral incident list; re-evaluated by the backend per call. */
 export function fetchIncidents(): Promise<IncidentOut[]> {
@@ -369,7 +369,7 @@ export function subscribeToStatusStream(
   }
 }
 
-// --- Settings (Ticket 4.1) --------------------------------------------------
+// --- Settings -----------------------------------------------------------------
 
 export function fetchSettings(): Promise<AppSettingsOut> {
   return request<AppSettingsOut>('/api/settings', { authenticated: true })
@@ -385,7 +385,7 @@ export function updateSettings(
   })
 }
 
-// --- Device CRUD (Ticket 4.2) ------------------------------------------------
+// --- Device CRUD --------------------------------------------------------------
 
 export function createDevice(data: DeviceCreate): Promise<DeviceOut> {
   return request<DeviceOut>('/api/devices', {
@@ -540,7 +540,7 @@ export function fetchAudit(
   return request<AuditPage>(`/api/audit${suffix}`, { authenticated: true })
 }
 
-// --- User management (Ticket 4.3) --------------------------------------------
+// --- User management ----------------------------------------------------------
 
 export function fetchUsers(): Promise<UserOut[]> {
   return request<UserOut[]>('/api/users', { authenticated: true })

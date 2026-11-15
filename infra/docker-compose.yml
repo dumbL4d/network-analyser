@@ -115,9 +115,8 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
-    # icmplib pings devices over raw ICMP sockets (Ticket 1.2), so CAP_NET_RAW
-    # is required or the backend cannot reach the sim-* devices. Confirmed in
-    # Tickets 6.1/6.2 standalone verification.
+    # icmplib pings devices over raw ICMP sockets, so CAP_NET_RAW is required
+    # or the backend cannot reach the sim-* devices.
     cap_add:
       - NET_RAW
     ports:
@@ -135,8 +134,8 @@ services:
         # Not DHCP. On the very first parallel start Docker's bridge IPAM handed
         # the previously-DHCP'd backend 10.99.0.1 -- statically reserved for
         # sim-fw-01 -- so sim-fw-01 failed to start with "Address already in
-        # use". Nothing pings the backend (it only makes outbound ICMP, per
-        # Tickets 1.2/6.1), so any free address works; pinning one (.99, clear
+        # use". Nothing pings the backend (it only makes outbound ICMP), so
+        # any free address works; pinning one (.99, clear
         # of the sims' statics >= .40) makes startup deterministic.
         ipv4_address: 10.99.0.99
       # Where the chaos agent is, when the "chaos" profile is running.
@@ -150,7 +149,7 @@ services:
       #   openssl rand -hex 32
       JWT_SECRET_KEY: '${JWT_SECRET_KEY:?set JWT_SECRET_KEY in infra/.env (see infra/.env.example)}'
       # JSON-array form is what pydantic-settings expects for the list[str]
-      # CORS_ORIGINS field (verified concretely in Ticket 6.2). Allows the
+      # CORS_ORIGINS field. Allows the
       # Vite dev origin (:5173) and the containerized nginx origin (:8080).
       CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173","http://localhost:8080"]}'
       # First start only: the passwords of the two default accounts. One that
@@ -164,10 +163,11 @@ services:
       # How long a login lasts, in minutes.
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
       # How long one ping waits for its reply, in seconds. A device that does
-      # not answer costs this once per ping of a cycle (see "Probing" in
-      # ../README.md).
+      # not answer costs this once per ping of a cycle (see "Probe statistics
+      # and classification" in ../docs/algorithms.md).
       PING_TIMEOUT_SECONDS: ${PING_TIMEOUT_SECONDS:-2.0}
-      # Data retention (see "Data persistence and retention" in ../README.md).
+      # Data retention (see "Data persistence and retention" in
+      # ../docs/architecture.md).
       # The defaults are the same as in backend/app/core/config.py; override
       # them in infra/.env.
       RAW_RETENTION_HOURS: ${RAW_RETENTION_HOURS:-24}

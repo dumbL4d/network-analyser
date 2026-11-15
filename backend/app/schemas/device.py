@@ -3,9 +3,8 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-# The official set of device types. Enforced here at the schema level (Ticket
-# 1.1 deliberately deferred DB/schema enforcement of this constraint; this is
-# where it finally lands). Do NOT add a CHECK constraint to the model itself.
+# The official set of device types, enforced here at the schema level. There
+# is deliberately no CHECK constraint on the model itself.
 DeviceType = Literal[
     "firewall", "switch", "server", "plc", "hmi", "ap", "scanner"
 ]

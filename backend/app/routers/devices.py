@@ -1,7 +1,7 @@
 """Device metadata API: read-only for everyone, writes admin-only.
 
-The two GET endpoints are viewer- AND admin-readable (unchanged from Ticket
-2.1). POST / PATCH / DELETE are protected by ``require_role("admin")`` and are
+The two GET endpoints are viewer- AND admin-readable. POST / PATCH / DELETE
+are protected by ``require_role("admin")`` and are
 where parent-reference sanity checks live (parent must exist, no self-paren, no
 circular references, no deleting a device that still has children).
 
@@ -162,8 +162,9 @@ def delete_device(
 ) -> None:
     device = _get_device_or_404(device_id, session)
 
-    # ``parent_id`` is a real FK constraint (Ticket 1.1), so deleting a parent
-    # would raise a raw DB integrity error. Surface a helpful 409 instead.
+    # SQLite does not enforce the ``parent_id`` foreign key here (the pragma is
+    # off), so without this check the children would be left pointing at a
+    # device that no longer exists.
     children = session.exec(
         select(Device).where(Device.parent_id == device_id)
     ).all()

@@ -35,7 +35,7 @@ interface SettingsFormState {
 }
 
 /**
- * Settings tab: edit the singleton AppSettings row (Ticket 4.1). The user can
+ * Settings tab: edit the singleton AppSettings row. The user can
  * change any values via the API without a backend restart; the poll loop picks
  * them up on its next cycle.
  *

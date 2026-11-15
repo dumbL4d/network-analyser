@@ -1,8 +1,7 @@
 # Security
 
-What the system defends against, how, and what it knowingly does not. The
-short version is in the [README](../README.md#security); fault injection has
-its own page, [chaos.md](chaos.md).
+What the system defends against, how, and what it knowingly does not. Fault
+injection has its own page, [chaos.md](chaos.md).
 
 ## What is worth protecting
 

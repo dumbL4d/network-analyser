@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { fetchFlapCounts } from '@/lib/api'
 import type { FlapCountOut } from '@/types/device'
 
-// Same simplification as useDeviceHistory (Ticket 2.4): the backend poll
+// Same simplification as useDeviceHistory: the backend poll
 // interval is configurable, but this hook hardcodes the default 10s.
 const FLAP_POLL_MS = 10_000
 

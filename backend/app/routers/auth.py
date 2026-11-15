@@ -102,8 +102,8 @@ def change_password(
     """Rotate the CURRENT user's password (available to any logged-in user).
 
     Self-service by design: this lives on the auth router because it acts on
-    your own account, whereas changing OTHER users' passwords is admin
-    territory (a later ticket).
+    your own account. There is no endpoint that changes another user's
+    password.
 
     This is also how an account gets rid of a seeded password: a successful
     change clears ``must_change_password``.

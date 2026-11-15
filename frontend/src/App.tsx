@@ -32,6 +32,12 @@ function AppHeader() {
         {isAuthenticated && (
           <nav className="flex items-center gap-1">
             <Link
+              to="/"
+              className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Topology
+            </Link>
+            <Link
               to="/metrics"
               className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >

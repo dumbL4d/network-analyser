@@ -7,9 +7,9 @@ Privileges / capabilities
 a raw socket, which requires elevated privileges:
 
 * **Docker (recommended)** -- the backend container needs the ``NET_RAW``
-  capability. Add ``cap_add: [NET_RAW]`` to the ``backend`` service in
-  ``infra/docker-compose.yml`` when that service is un-commented in a later
-  infra ticket. Containers run as root by default, but declaring the capability
+  capability, which the ``backend`` service in
+  ``infra/docker-compose.yml`` sets with ``cap_add: [NET_RAW]``.
+  Containers run as root by default, but declaring the capability
   explicitly is clearer and survives a switch to a non-root user.
 * **Local, outside Docker, on Linux** -- either run uvicorn with ``sudo``, or
   grant the capability to the Python interpreter, e.g.::

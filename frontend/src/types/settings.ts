@@ -1,4 +1,4 @@
-/** Mirrors the backend's single-row AppSettings singleton (Ticket 4.1). */
+/** Mirrors the backend's single-row AppSettings singleton. */
 export interface AppSettingsOut {
   site_name: string
   poll_interval_seconds: number

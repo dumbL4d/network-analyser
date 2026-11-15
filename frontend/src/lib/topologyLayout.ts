@@ -28,6 +28,13 @@ const UNKNOWN_ZONE_X = 960
 // Extra links are dashed and blue, so they stand out from the grey tree edges.
 const LINK_COLOR = '#2563eb'
 const ROW_GAP_Y = 110
+// The size of a device card (DeviceNode). React Flow hides a node until it
+// knows its size, and forgets what it measured whenever the node object is
+// replaced, which every status update does. A status update that arrived
+// together with the first measurement left the whole graph invisible until
+// the page was reloaded. With a size given here, a node is never hidden.
+const NODE_WIDTH = 190
+const NODE_HEIGHT = 65
 
 const KNOWN_ZONES = Object.keys(ZONE_X)
 
@@ -71,6 +78,8 @@ export function computeLayout(
         id: device.id,
         type: 'device',
         position: { x, y: index * ROW_GAP_Y },
+        initialWidth: NODE_WIDTH,
+        initialHeight: NODE_HEIGHT,
         data: { device },
       })
     })

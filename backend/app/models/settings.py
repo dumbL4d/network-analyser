@@ -16,8 +16,8 @@ class AppSettings(SQLModel, table=True):
     ``app.core.config.Settings`` (10s poll, 100/500ms latency thresholds).
     Once seeded, subsequent startups keep whatever an admin last saved (the
     seeder is idempotent), so edits survive restarts. ``flap_threshold`` is
-    stored now so the Phase 5 flap-detection logic has somewhere to read it
-    from; it does nothing yet.
+    the number of status changes from which the Stability page highlights a
+    device as flapping.
     """
 
     id: int | None = Field(default=None, primary_key=True)

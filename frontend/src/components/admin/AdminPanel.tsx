@@ -7,7 +7,7 @@ import AdminUsersTab from '@/components/admin/AdminUsersTab'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 /**
- * Phase 4 Admin Panel: admin-only device CRUD, the extra links between
+ * Admin Panel: admin-only device CRUD, the extra links between
  * devices, live monitoring settings, and user management, plus the
  * password-change form (in the Users tab), fault injection and the audit log.
  */
