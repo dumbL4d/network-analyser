@@ -65,6 +65,7 @@ from app.services.debounce import debouncer  # noqa: E402
 from app.services.flap_store import flap_store  # noqa: E402
 from app.services.history_store import history_store  # noqa: E402
 from app.services.incident_tracker import incident_tracker  # noqa: E402
+from app.services.poll_health import poll_health  # noqa: E402
 from app.services.rate_limit import login_throttle  # noqa: E402
 from app.services.status_store import status_store  # noqa: E402
 from app.services.stream_tickets import stream_tickets  # noqa: E402
@@ -92,9 +93,9 @@ def _remove_temp_database() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _fresh_in_memory_stores() -> None:
     """The status/history/flap stores, the debouncer, the incident tracker,
-    the anomaly detectors, the login throttle and the stream tickets are
-    process-wide singletons that the app imports by name, so they are reset in
-    place before every test."""
+    the anomaly detectors, the poll loop's health notes, the login throttle
+    and the stream tickets are process-wide singletons that the app imports by
+    name, so they are reset in place before every test."""
     for store in (
         anomaly_registry,
         status_store,
@@ -102,6 +103,7 @@ def _fresh_in_memory_stores() -> None:
         flap_store,
         debouncer,
         incident_tracker,
+        poll_health,
         login_throttle,
         stream_tickets,
     ):

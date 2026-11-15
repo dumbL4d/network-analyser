@@ -29,6 +29,7 @@ from app.services.ping_engine import (
     PingFn,
     ping_all,
 )
+from app.services.poll_health import poll_health, stale_after_seconds
 from app.services.status_store import status_store
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,9 @@ async def run_poll_loop(
     then written to the database (one sample per device plus any status
     transitions and anomaly events), and the incident tracker opens, updates
     or resolves the stored incidents. Both run in a worker thread, so they
-    never block the event loop.
+    never block the event loop. A cycle that gets that far is noted as
+    completed, which is what the health endpoint judges the freshness of the
+    statuses by (see ``app.services.poll_health``).
 
     ``ping`` and ``sleep`` default to the real ICMP ping and ``asyncio.sleep``.
     They are parameters only so tests can inject fakes and step the loop one
@@ -73,6 +76,13 @@ async def run_poll_loop(
     )
     # Fallback used until the first row read succeeds (and after any error).
     interval = settings.PING_INTERVAL_SECONDS
+    # From here on a cycle is expected: the health endpoint says so when none
+    # completes in time (see app.services.poll_health).
+    poll_health.started(
+        stale_after_seconds(
+            interval, DEFAULT_PINGS_PER_CYCLE, DEFAULT_PING_GAP_MS, settings.PING_TIMEOUT_SECONDS
+        )
+    )
 
     while True:
         try:
@@ -112,6 +122,11 @@ async def run_poll_loop(
                     alpha=app_settings.anomaly_alpha,
                     window=app_settings.anomaly_window,
                 )
+
+            stale_after = stale_after_seconds(
+                interval, pings, gap_ms, settings.PING_TIMEOUT_SECONDS
+            )
+            poll_health.cycle_running(stale_after)
 
             devices = _load_devices()
             results = await ping_all(
@@ -163,6 +178,9 @@ async def run_poll_loop(
                 len(results),
                 interval,
             )
+            # Only a cycle that got this far counts: a failed one leaves the
+            # statuses on screen as old as they were.
+            poll_health.cycle_completed(stale_after)
         except Exception:
             logger.error("Status poll iteration failed; continuing", exc_info=True)
 

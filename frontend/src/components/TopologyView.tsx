@@ -68,7 +68,7 @@ export default function TopologyView() {
 
   if (loading) {
     return (
-      <div className="flex h-[calc(100vh-3.5rem)] items-center justify-center">
+      <div className="absolute inset-0 flex items-center justify-center">
         <p className="text-sm text-muted-foreground">Loading topology...</p>
       </div>
     )
@@ -76,7 +76,7 @@ export default function TopologyView() {
 
   if (error) {
     return (
-      <div className="flex h-[calc(100vh-3.5rem)] items-center justify-center">
+      <div className="absolute inset-0 flex items-center justify-center">
         <p className="text-sm text-red-600">
           Failed to load topology: {error}
         </p>
@@ -85,7 +85,7 @@ export default function TopologyView() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] w-full">
+    <div className="absolute inset-0 flex">
       <WhatIfPanel
         devices={devices}
         simulation={simulation}

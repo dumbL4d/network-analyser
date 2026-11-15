@@ -4,7 +4,23 @@ What each commit on the branch `feat/tech-update` added, newest first. The
 branch starts from `main` at `4df7c97`. The number of backend tests is the
 size of the suite after that commit.
 
-## docs: finalize README, docs and demo script
+## feat: warn when the monitoring data is stale
+
+- The poll loop notes when each cycle completes. `GET /api/health` keeps
+  `status`, `app` and `env`, and adds `last_poll_at`, `last_poll_age_seconds`
+  and `poll_stale`. The last is true when no cycle has completed for three
+  poll intervals plus the longest the pings of one cycle can take (38.6 s
+  with the default settings).
+- Every page behind the login shows an amber warning while that is the
+  case, or while the backend does not answer. It goes away by itself with
+  the next completed cycle. Before, the pages went on showing the last
+  statuses.
+- The Topology page fills what the header and the warning leave of the
+  window; it used to assume that only the header was above it.
+- No migration, no new setting, no new dependency.
+- 1396 tests.
+
+## f392eef docs: finalize README, docs and demo script
 
 - The README is now the entry page: the problem and the solution, what is
   implemented, the architecture, an ER diagram of the database, the API

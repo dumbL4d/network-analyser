@@ -154,3 +154,6 @@ failure goes to the application log: a full disk must not lock everybody out.
   inserts a style element at runtime. Inline scripts stay forbidden.
 - **The API's own documentation** (`/docs`, `/openapi.json`) is public. It
   shows what the API can do, not any data.
+- **`/api/health` is public too**, as a health check has to be. It tells
+  anyone who can reach the API when the last poll completed and whether the
+  monitoring has stalled. It shows no device data.

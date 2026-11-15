@@ -32,6 +32,11 @@ one machine.
   agree (3 to get worse, 2 to recover), so one bad poll raises nothing.
 - **Live view.** The topology page updates over a Server-Sent Events stream.
   History, flap counts and incidents come over REST.
+- **A warning when the monitor itself falls behind.** The poll loop notes
+  when each cycle completes. If none has for about three poll intervals,
+  every page behind the login says that its statuses may be out of date, and
+  `/api/health` reports how old the last poll is
+  ([how it is decided](docs/architecture.md#is-the-data-fresh)).
 - **History that survives restarts.** Every poll is stored in SQLite: raw for
   a day, then as 1-minute rollups for 30 days. Charts cover the last hour up
   to the last 30 days.
@@ -108,6 +113,7 @@ flowchart LR
         AUTH["Auth<br/>(JWT, login throttle, stream tickets)"]
         AUD["Audit log<br/>(who did what, from where)"]
         TRK["IncidentTracker<br/>(open / update / resolve)"]
+        PH["PollHealth<br/>(when the last cycle completed)"]
         RET["Retention job<br/>(hourly rollup + cleanup)"]
         DB[("SQLite<br/>backend-data volume")]
     end
@@ -151,6 +157,8 @@ flowchart LR
     POLL -- "confirmed status, every cycle" --> TRK
     TRK --> IA
     TRK -- "incidents + timeline" --> DB
+    POLL -- "cycle completed" --> PH
+    API -- "/api/health: is the data fresh?" --> PH
     RET --> DB
     DB -. warm-up at startup .-> HS
     DB -. warm-up at startup .-> FS
@@ -322,7 +330,7 @@ is at `http://localhost:8000/docs`.
 
 | Method   | Path                              | Access      | Description                                   |
 | -------- | --------------------------------- | ----------- | --------------------------------------------- |
-| `GET`    | `/api/health`                     | public      | Liveness smoke check                          |
+| `GET`    | `/api/health`                     | public      | Liveness, age of the last poll, stale or not  |
 | `POST`   | `/api/auth/login`                 | public      | OAuth2 password login → JWT + role            |
 | `GET`    | `/api/auth/me`                    | user        | Current session identity                       |
 | `PATCH`  | `/api/auth/change-password`       | user        | Self-service password change                   |
@@ -487,8 +495,8 @@ are set in `infra/.env`; the others keep their defaults there. Both
 | `PING_PRIVILEGED` | `True` | | Raw ICMP sockets. `False` uses the unprivileged mode. |
 | `PING_TIMEOUT_SECONDS` | `2.0` | yes | How long one ping waits for its reply. |
 | `POLL_ENABLED` | `True` | | `False` starts the API without the poll loop (the tests do). |
-| `PING_INTERVAL_SECONDS` | `10.0` | | Fallback only, used if the settings row is missing. |
-| `LATENCY_WARN_MS` | `100.0` | | Fallback only, as above. |
+| `PING_INTERVAL_SECONDS` | `10.0` | | Fallback only, used if the settings row is missing or has not been read yet. |
+| `LATENCY_WARN_MS` | `100.0` | | Fallback only, used if the settings row is missing. |
 | `LATENCY_CRIT_MS` | `500.0` | | Fallback only, as above. |
 | `HISTORY_MAX_SAMPLES` | `36` | | Recent samples per device kept in memory. |
 | `RAW_RETENTION_HOURS` | `24` | yes | Raw samples older than this become 1-minute rollups. |
@@ -610,8 +618,13 @@ Monitoring and analysis
   healthy.
 - **`unknown` is never a failure.** If the monitor itself cannot probe (no
   `CAP_NET_RAW`, say), every device is `unknown` and no incident is raised.
-- **Stale data is not flagged.** If the poll loop stops, the pages keep
-  showing the last statuses, and `/api/health` still answers ok.
+- **A stalled monitor is reported, not repaired.** When no poll cycle
+  completes for about three poll intervals, the pages show a warning and
+  `/api/health` reports `poll_stale`. Nothing restarts the poll loop, and the
+  endpoint still answers 200 with `status: ok`, as it always did, so a check
+  that reads only the status code does not notice. A cycle whose database
+  write fails counts as completed: the live statuses are current then, and
+  only the backend log says that the history is not being stored.
 - **Detection takes three polls.** That is the price of debouncing. With the
   defaults an outage is confirmed after about 50 seconds, because every ping
   to a device that does not answer waits for its timeout. A lower
@@ -627,8 +640,8 @@ Monitoring and analysis
 Design limits
 
 - **One backend process.** The latest snapshot, the debounce state, the
-  detectors, the login throttle and the stream tickets are in its memory. A
-  second process would poll twice and disagree.
+  detectors, the login throttle, the stream tickets and the time of the last
+  poll are in its memory. A second process would poll twice and disagree.
 - **SQLite.** One writer at a time, and foreign keys are not enforced.
 - **Built for tens of devices.** The Metrics page asks for history one device
   at a time, and nothing is paged on the topology page.

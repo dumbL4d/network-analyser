@@ -37,6 +37,7 @@ from app.schemas.auth import StreamTicketOut
 from app.services.chaos import report_leftover_faults
 from app.services.persistence import warm_caches
 from app.services.ping_engine import DeviceStatus
+from app.services.poll_health import poll_health
 from app.services.poll_loop import run_poll_loop
 from app.services.retention import run_retention_loop
 from app.services.status_store import status_store
@@ -185,8 +186,22 @@ app.include_router(users_router)
 
 
 @app.get("/api/health", status_code=200)
-def health_check():
-    return {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV}
+async def health_check():
+    """Does the API answer, and is the monitoring behind it keeping up?
+
+    ``status`` only says that this process answers, as it always did.
+    ``poll_stale`` is true when the poll loop has not completed a cycle for
+    about three poll intervals: the statuses the pages show are old then (see
+    ``app.services.poll_health``).
+    """
+    # async, so that it runs between two steps of the poll loop and never
+    # reads its notes while they are being written.
+    return {
+        "status": "ok",
+        "app": settings.APP_NAME,
+        "env": settings.APP_ENV,
+        **poll_health.report(),
+    }
 
 
 @app.get("/api/status")

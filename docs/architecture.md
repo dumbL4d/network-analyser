@@ -13,7 +13,8 @@ is stored, and how it is deployed. The picture of the whole is in the
   hourly retention job. All monitoring logic is here, in `app/services/`, as
   pure functions where possible. What has to survive a restart is in SQLite.
   The rest is in memory: the latest snapshot, recent history, debounce state,
-  anomaly detectors, the login throttle and the stream tickets.
+  anomaly detectors, the login throttle, the stream tickets and the time of
+  the last completed poll.
 - **Frontend** (`frontend/`): a React single-page app, built to static files
   and served by nginx. The browser calls the API directly; nginx proxies
   nothing.
@@ -36,7 +37,8 @@ is stored, and how it is deployed. The picture of the whole is in the
 │   │   ├── routers/         auth, devices, links, settings, users, history, flaps, incidents, stats,
 │   │   │                    analysis (SPOF, what-if), chaos, anomalies, audit, playbooks
 │   │   ├── schemas/         Pydantic request and response models
-│   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores,
+│   │   ├── services/        ping_engine, debounce, poll_loop, poll_health,
+│   │   │                    status/history/flap stores,
 │   │   │                    incident_analysis, incident_tracker, incident_stats,
 │   │   │                    topology_graph, topology_analysis, device_links,
 │   │   │                    persistence, rollup, retention,
@@ -97,7 +99,8 @@ flowchart TD
     K --> I["flap_store.record()<br/>confirmed status changes"]
     I --> P["persist_cycle() in a worker thread<br/>samples + transitions + anomaly events, one transaction"]
     P --> T["incident_tracker.track() in a worker thread<br/>open / update / resolve stored incidents"]
-    T --> J["asyncio.sleep(interval)"]
+    T --> Q["poll_health.cycle_completed()<br/>notes when the cycle finished"]
+    Q --> J["asyncio.sleep(interval)"]
     G --> J
     H --> J
     J --> C
@@ -112,6 +115,61 @@ restart required.
 Setting `POLL_ENABLED=False` starts the API without the background tasks (the
 test suite does this). Nothing is pinged, so every device stays `unknown`, and
 the retention job does not run.
+
+## Is the data fresh?
+
+The pages show what the last poll cycle found. If the loop stops completing
+cycles (the database is locked, the task has died), they would go on showing
+it as if it were current. So the loop notes the time whenever a cycle
+completes (`app/services/poll_health.py`), and `GET /api/health`, which needs
+no login, reports it:
+
+```json
+{
+  "status": "ok",
+  "app": "Network Analyser API",
+  "env": "development",
+  "last_poll_at": "2026-11-15T10:00:20.123456+00:00",
+  "last_poll_age_seconds": 4.2,
+  "poll_stale": false
+}
+```
+
+- `status`, `app` and `env` are what the endpoint always returned. `status`
+  only says that the API process answers: it stays `ok`, and the answer stays
+  a 200, when the monitoring has stalled.
+- `last_poll_at` is the end of the last completed cycle and
+  `last_poll_age_seconds` how long ago that was. Both are `null` until the
+  first cycle has completed.
+- `poll_stale` is true when the wait for a completed cycle has lasted longer
+  than
+
+  `3 × poll interval + pings per cycle × ping timeout + (pings per cycle − 1) × ping gap`
+
+  That is three poll intervals, plus the longest the pings of one cycle can
+  take: a device that does not answer makes every ping wait for its timeout.
+  With the default settings it is 3 × 10 + 4 × 2 + 3 × 0.2 = 38.6 seconds.
+  Without the second part, a cycle that is slow because devices are down
+  would count against the monitor. The wait is counted from the last
+  completed cycle, or from the start of the loop while there is none. The
+  limit is that of the settings the last completed cycle ran with, or of the
+  cycle now running if its settings allow more: a cycle is never overdue for
+  running as it was told to. Until the settings have been read once, it is
+  that of `PING_INTERVAL_SECONDS` and the default probe settings. A cycle
+  that fails does not count. With `POLL_ENABLED=False` there is no loop, and
+  nothing is ever stale.
+
+The frontend asks every 10 seconds, and while `poll_stale` is true it shows
+an amber line under the header of every page behind the login: "Monitoring
+has fallen behind. The statuses shown may be out of date. The last poll
+finished 52 s ago." It begins "Monitoring has not completed a poll yet." when
+no cycle has completed since the backend started, and "The backend is not
+answering." when the request itself fails or gets no answer within 20
+seconds (a backend that is frozen accepts the connection and then says
+nothing). The line stays in view when the page is scrolled, and goes away by
+itself: with the next completed cycle, or as soon as the backend answers
+again. The backend decides what is stale, so the page needs neither the
+settings nor a clock that agrees with the server's.
 
 ## The status snapshot
 
@@ -535,6 +593,8 @@ flowchart LR
         C["/account — AccountPage<br/>(change password, forced at the first login)"]
     end
 
+    W["every view — StaleDataBanner<br/>(warning while the statuses may be out of date)"]
+
     T -. SSE .-> STREAM["/api/stream/status (EventSource + single-use ticket)"]
     T -. "/api/links + /api/analysis/spof + what-if" .-> REST
     M -. SSE + /api/history .-> STREAM
@@ -543,12 +603,15 @@ flowchart LR
     I -. "/api/incidents + /history (poll 10 s) + /api/stats/incidents" .-> REST
     IDV -. "/api/incidents/:id (poll 10 s)" .-> REST
     A -. "/api/devices /links /settings /users /chaos /audit" .-> REST
+    W -. "/api/health (poll 10 s)" .-> REST
 ```
 
 The live status path is **push** (SSE), while everything else is **pull**
 (REST polling): live and stored incidents re-poll every 10 s, incident
 statistics every 30 s, availability every minute, flap counts every 10 s,
-settings on mount, and history per device view. Every stream connection is opened with
+the health check behind the stale-data warning (see
+[Is the data fresh?](#is-the-data-fresh)) every 10 s, settings on mount, and
+history per device view. Every stream connection is opened with
 a new ticket. When one drops, it is closed and replaced by a new connection
 with a new ticket, after 1 s, 2 s, 4 s and so on up to 30 s while it keeps
 failing (the browser's own reconnect would reuse the spent ticket).

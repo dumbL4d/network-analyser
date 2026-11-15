@@ -11,6 +11,7 @@ import type {
   HistoryWindow,
   HistoryWindowOut,
 } from '@/types/device'
+import type { HealthOut } from '@/types/health'
 import type {
   AvailabilityOut,
   AvailabilityWindow,
@@ -120,6 +121,8 @@ interface RequestOptions {
    * surface instead of triggering a session-expiry flow.
    */
   unauthorizedIsExpired?: boolean
+  /** Gives the request up when it fires, e.g. `AbortSignal.timeout(ms)`. */
+  signal?: AbortSignal
 }
 
 async function request<T>(
@@ -137,6 +140,7 @@ async function request<T>(
     method: options.method ?? 'GET',
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    signal: options.signal,
   })
 
   if (!response.ok) {
@@ -171,6 +175,17 @@ async function request<T>(
 }
 
 // --- Topology / monitoring ---------------------------------------------------
+
+// A backend that accepts the connection and then never answers (frozen, or
+// its event loop stuck) must not pass for one that is fine.
+const HEALTH_TIMEOUT_MS = 20_000
+
+/** Public: whether the API answers and the poll loop behind it keeps up. */
+export function fetchHealth(): Promise<HealthOut> {
+  return request<HealthOut>('/api/health', {
+    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+  })
+}
 
 export function fetchDevices(): Promise<DeviceOut[]> {
   return request<DeviceOut[]>('/api/devices', { authenticated: true })

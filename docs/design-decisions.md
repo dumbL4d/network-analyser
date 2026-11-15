@@ -193,8 +193,8 @@ be revoked before it expires. See [security.md](security.md).
 ## 11. One process, hot state in memory
 
 **Decision.** The backend is a single process. The latest snapshot, recent
-history, debounce state, detectors, login throttle and stream tickets are in
-its memory.
+history, debounce state, detectors, login throttle, stream tickets and the
+time of the last completed poll are in its memory.
 
 **Why.** One asyncio task polls, and the pages read from memory, which keeps
 both simple and fast. What must survive a restart is in SQLite, and the

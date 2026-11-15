@@ -2,6 +2,7 @@
 playbooks and the SSE status stream."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import get_args
 
 import pytest
@@ -13,6 +14,7 @@ from app.models.user import User
 from app.schemas.device import DeviceType
 from app.services.flap_store import flap_store
 from app.services.history_store import history_store
+from app.services.poll_health import poll_health
 from app.services.status_store import status_store
 from tests.helpers import make_status, seed_devices
 
@@ -33,7 +35,51 @@ def test_health_is_public(client):
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV}
+    assert response.json() == {
+        # The three original keys...
+        "status": "ok",
+        "app": settings.APP_NAME,
+        "env": settings.APP_ENV,
+        # ...and what the poll loop reports about itself. The suite runs
+        # without one, so no cycle has completed and none is overdue.
+        "last_poll_at": None,
+        "last_poll_age_seconds": None,
+        "poll_stale": False,
+    }
+
+
+def test_health_reports_the_age_of_the_last_completed_poll(client):
+    completed = datetime.now(timezone.utc) - timedelta(seconds=12)
+    poll_health.cycle_completed(38.6, at=completed)
+
+    body = client.get("/api/health").json()
+
+    assert body["last_poll_at"] == completed.isoformat()
+    assert 12 <= body["last_poll_age_seconds"] < 17
+    assert body["poll_stale"] is False
+
+
+def test_health_says_so_when_no_poll_has_completed_at_all(client):
+    poll_health.started(38.6, at=datetime.now(timezone.utc) - timedelta(seconds=60))
+
+    body = client.get("/api/health").json()
+
+    assert body["last_poll_at"] is None
+    assert body["last_poll_age_seconds"] is None
+    assert body["poll_stale"] is True
+
+
+def test_health_says_so_when_the_monitoring_has_fallen_behind(client):
+    poll_health.cycle_completed(38.6, at=datetime.now(timezone.utc) - timedelta(seconds=60))
+
+    response = client.get("/api/health")
+
+    # Still a 200 with status "ok", as before: the API itself is answering.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["poll_stale"] is True
+    assert 60 <= body["last_poll_age_seconds"] < 65
 
 
 def test_status_is_empty_until_the_first_poll(client, admin_headers):

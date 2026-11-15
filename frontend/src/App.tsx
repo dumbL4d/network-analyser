@@ -10,6 +10,7 @@ import LoginPage from '@/components/LoginPage'
 import MetricsView from '@/components/MetricsView'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import StabilityView from '@/components/StabilityView'
+import StaleDataBanner from '@/components/StaleDataBanner'
 import TopologyView from '@/components/TopologyView'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/contexts/AuthContext'
@@ -101,7 +102,10 @@ function AppLayout() {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <AppHeader />
-      <main className="flex-1">
+      <StaleDataBanner />
+      {/* relative: the topology page fills exactly what the header and the
+          warning above leave of the window. */}
+      <main className="relative flex-1">
         <Outlet />
       </main>
     </div>
