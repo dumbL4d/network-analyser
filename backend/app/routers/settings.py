@@ -14,6 +14,7 @@ from app.db.session import get_session
 from app.models.settings import AppSettings
 from app.models.user import User
 from app.schemas.settings import SettingsOut, SettingsUpdate
+from app.services.anomaly import WARMUP_SAMPLES
 from app.services.debounce import MAX_THRESHOLD, MIN_THRESHOLD
 from app.services.ping_engine import (
     MAX_PING_GAP_MS,
@@ -27,6 +28,14 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 # Matches the original tool's documented minimum poll interval.
 MIN_POLL_INTERVAL_SECONDS = 5.0
+
+# Anomaly detection. k: standard deviations above the baseline. m: readings in
+# a row above it. alpha: how fast the EWMA detector forgets. window: how many
+# readings the rolling detector looks back on, at least its warm-up.
+ANOMALY_K_RANGE = (1, 10)
+ANOMALY_M_RANGE = (1, 20)
+ANOMALY_ALPHA_RANGE = (0.01, 0.5)
+ANOMALY_WINDOW_RANGE = (WARMUP_SAMPLES, 1000)
 
 
 def _get_singleton(session: Session) -> AppSettings:
@@ -97,10 +106,15 @@ def update_settings(
                 detail=f"{field} must be between {MIN_THRESHOLD} and {MAX_THRESHOLD}",
             )
 
-    # Probing (see app.services.ping_engine): each value in its range ...
+    # Probing (see app.services.ping_engine) and anomaly detection (see
+    # app.services.anomaly): each value in its range ...
     ranges = {
         "pings_per_cycle": (MIN_PINGS_PER_CYCLE, MAX_PINGS_PER_CYCLE),
         "ping_gap_ms": (MIN_PING_GAP_MS, MAX_PING_GAP_MS),
+        "anomaly_k": ANOMALY_K_RANGE,
+        "anomaly_m": ANOMALY_M_RANGE,
+        "anomaly_alpha": ANOMALY_ALPHA_RANGE,
+        "anomaly_window": ANOMALY_WINDOW_RANGE,
     }
     for field, (lowest, highest) in ranges.items():
         if field in updates and not lowest <= updates[field] <= highest:

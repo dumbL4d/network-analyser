@@ -1,6 +1,6 @@
 import type { Edge, Node } from '@xyflow/react'
 
-import type { DeviceOut, DeviceStatus } from '@/types/device'
+import type { DeviceAnomaly, DeviceOut, DeviceStatus } from '@/types/device'
 import type { LinkOut } from '@/types/topology'
 
 export type DeviceNodeData = {
@@ -10,6 +10,8 @@ export type DeviceNodeData = {
   blastRadius?: number
   /** Set while a what-if is shown: why this device is predicted to be down. */
   predicted?: 'failed' | 'cut off'
+  /** Advisory: what the anomaly detector finds unusual about the device. */
+  anomaly?: DeviceAnomaly | null
   [key: string]: unknown
 }
 

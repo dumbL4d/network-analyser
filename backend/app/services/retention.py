@@ -5,7 +5,8 @@ Every run (hourly by default):
 1. Raw samples older than ``RAW_RETENTION_HOURS`` are folded into 1-minute
    rollups and deleted.
 2. Rollups older than ``ROLLUP_RETENTION_DAYS`` are deleted.
-3. Status transitions older than ``TRANSITION_RETENTION_DAYS`` are deleted.
+3. Status transitions older than ``TRANSITION_RETENTION_DAYS`` are deleted,
+   and so are anomaly events that began before then.
 
 Step 1 is safe to repeat (idempotent). Each batch of raw samples is added to
 the rollups and deleted in the SAME transaction, so a sample is always in
@@ -26,7 +27,14 @@ from sqlalchemy import delete, insert, select, update
 from app.core.config import settings
 from app.db.session import engine
 from app.services.flap_store import flap_store
-from app.services.persistence import ROLLUPS, SAMPLES, TRANSITIONS, rollup_bucket, rollup_values
+from app.services.persistence import (
+    ANOMALIES,
+    ROLLUPS,
+    SAMPLES,
+    TRANSITIONS,
+    rollup_bucket,
+    rollup_values,
+)
 from app.services.rollup import MINUTE, Bucket, bucket_start, merge, sample_bucket
 
 logger = logging.getLogger(__name__)
@@ -45,6 +53,7 @@ class RetentionReport:
     rollup_rows_written: int
     rollups_deleted: int
     transitions_deleted: int
+    anomalies_deleted: int = 0
 
 
 def _roll_up_samples_before(cutoff: datetime) -> tuple[int, int]:
@@ -140,12 +149,19 @@ def run_retention(now: datetime | None = None) -> RetentionReport:
                 TRANSITIONS.c.ts < now - timedelta(days=settings.TRANSITION_RETENTION_DAYS)
             )
         ).rowcount
+        # Anomaly events are kept for as long as status transitions.
+        anomalies_deleted = connection.execute(
+            delete(ANOMALIES).where(
+                ANOMALIES.c.started_at < now - timedelta(days=settings.TRANSITION_RETENTION_DAYS)
+            )
+        ).rowcount
 
     return RetentionReport(
         samples_rolled_up=samples_rolled_up,
         rollup_rows_written=rollup_rows_written,
         rollups_deleted=rollups_deleted,
         transitions_deleted=transitions_deleted,
+        anomalies_deleted=anomalies_deleted,
     )
 
 

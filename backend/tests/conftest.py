@@ -57,6 +57,7 @@ from app.db.seed import seed_devices_from_json  # noqa: E402
 from app.db.seed_settings import seed_default_settings  # noqa: E402
 from app.db.seed_users import seed_default_users  # noqa: E402
 from app.db.session import engine, init_db  # noqa: E402
+from app.services.anomaly.registry import anomaly_registry  # noqa: E402
 from app.services.chaos import chaos_controller  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services.debounce import debouncer  # noqa: E402
@@ -90,9 +91,11 @@ def _remove_temp_database() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _fresh_in_memory_stores() -> None:
     """The status/history/flap stores, the debouncer, the incident tracker,
-    the login throttle and the stream tickets are process-wide singletons that
-    the app imports by name, so they are reset in place before every test."""
+    the anomaly detectors, the login throttle and the stream tickets are
+    process-wide singletons that the app imports by name, so they are reset in
+    place before every test."""
     for store in (
+        anomaly_registry,
         status_store,
         history_store,
         flap_store,

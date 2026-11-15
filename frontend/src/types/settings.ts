@@ -17,6 +17,17 @@ export interface AppSettingsOut {
   loss_warn_pct: number
   /** A device is degraded from this much jitter (ms). */
   jitter_warn_ms: number
+  /** Anomaly detection (advisory): on or off, and which detector. */
+  anomaly_enabled: boolean
+  anomaly_detector: 'ewma' | 'rolling'
+  /** A reading counts when it is this many standard deviations above normal ... */
+  anomaly_k: number
+  /** ... and an anomaly is this many such readings in a row. */
+  anomaly_m: number
+  /** How fast the EWMA detector forgets (0.01-0.5). */
+  anomaly_alpha: number
+  /** How many readings the rolling detector looks back on (30-1000). */
+  anomaly_window: number
 }
 
 /** PATCH /api/settings body (backend SettingsUpdate); all fields optional. */
@@ -32,4 +43,10 @@ export interface SettingsUpdate {
   ping_gap_ms?: number
   loss_warn_pct?: number
   jitter_warn_ms?: number
+  anomaly_enabled?: boolean
+  anomaly_detector?: 'ewma' | 'rolling'
+  anomaly_k?: number
+  anomaly_m?: number
+  anomaly_alpha?: number
+  anomaly_window?: number
 }

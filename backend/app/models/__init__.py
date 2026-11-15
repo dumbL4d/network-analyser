@@ -1,3 +1,4 @@
+from app.models.anomaly import AnomalyEvent
 from app.models.audit import AuditEvent
 from app.models.device import Device
 from app.models.device_link import DeviceLink
@@ -7,6 +8,7 @@ from app.models.telemetry import LatencyRollup1m, LatencySample, StatusTransitio
 from app.models.user import User
 
 __all__ = [
+    "AnomalyEvent",
     "AuditEvent",
     "Device",
     "DeviceLink",

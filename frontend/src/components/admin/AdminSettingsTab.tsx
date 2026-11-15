@@ -4,6 +4,13 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { fetchSettings, updateSettings } from '@/lib/api'
 import type { AppSettingsOut } from '@/types/settings'
 
@@ -19,6 +26,12 @@ interface SettingsFormState {
   ping_gap_ms: string
   loss_warn_pct: string
   jitter_warn_ms: string
+  anomaly_enabled: boolean
+  anomaly_detector: AppSettingsOut['anomaly_detector']
+  anomaly_k: string
+  anomaly_m: string
+  anomaly_alpha: string
+  anomaly_window: string
 }
 
 /**
@@ -54,6 +67,12 @@ export default function AdminSettingsTab() {
           ping_gap_ms: String(settings.ping_gap_ms),
           loss_warn_pct: String(settings.loss_warn_pct),
           jitter_warn_ms: String(settings.jitter_warn_ms),
+          anomaly_enabled: settings.anomaly_enabled,
+          anomaly_detector: settings.anomaly_detector,
+          anomaly_k: String(settings.anomaly_k),
+          anomaly_m: String(settings.anomaly_m),
+          anomaly_alpha: String(settings.anomaly_alpha),
+          anomaly_window: String(settings.anomaly_window),
         })
       })
       .catch((err: unknown) => {
@@ -85,6 +104,12 @@ export default function AdminSettingsTab() {
         ping_gap_ms: Number(form.ping_gap_ms),
         loss_warn_pct: Number(form.loss_warn_pct),
         jitter_warn_ms: Number(form.jitter_warn_ms),
+        anomaly_enabled: form.anomaly_enabled,
+        anomaly_detector: form.anomaly_detector,
+        anomaly_k: Number(form.anomaly_k),
+        anomaly_m: Number(form.anomaly_m),
+        anomaly_alpha: Number(form.anomaly_alpha),
+        anomaly_window: Number(form.anomaly_window),
       })
       setSuccess('Settings updated')
       window.setTimeout(() => setSuccess(null), 4000)
@@ -301,6 +326,120 @@ export default function AdminSettingsTab() {
               have to fit in the poll interval: pings × gap + the ping timeout
               may take up at most 80% of it. With 1 ping per cycle a device is
               judged on reachability and latency alone, as before.
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex items-center gap-2 pt-6">
+                <input
+                  id="set-anomaly-enabled"
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={form.anomaly_enabled}
+                  onChange={(e) =>
+                    setForm({ ...form, anomaly_enabled: e.target.checked })
+                  }
+                />
+                <Label htmlFor="set-anomaly-enabled">Anomaly detection</Label>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="set-anomaly-detector">Detector</Label>
+                <Select
+                  value={form.anomaly_detector}
+                  onValueChange={(next) =>
+                    setForm({
+                      ...form,
+                      anomaly_detector: next as AppSettingsOut['anomaly_detector'],
+                    })
+                  }
+                >
+                  <SelectTrigger
+                    id="set-anomaly-detector"
+                    data-testid="anomaly-detector"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ewma">EWMA (frozen baseline)</SelectItem>
+                    <SelectItem value="rolling">Rolling z-score</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="set-anomaly-k">Threshold k (1–10)</Label>
+                <Input
+                  id="set-anomaly-k"
+                  type="number"
+                  min={1}
+                  max={10}
+                  step={0.5}
+                  value={form.anomaly_k}
+                  onChange={(e) =>
+                    setForm({ ...form, anomaly_k: e.target.value })
+                  }
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="set-anomaly-m">Readings in a row m (1–20)</Label>
+                <Input
+                  id="set-anomaly-m"
+                  type="number"
+                  min={1}
+                  max={20}
+                  step={1}
+                  value={form.anomaly_m}
+                  onChange={(e) =>
+                    setForm({ ...form, anomaly_m: e.target.value })
+                  }
+                  required
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="set-anomaly-alpha">
+                  EWMA alpha (0.01–0.5)
+                </Label>
+                <Input
+                  id="set-anomaly-alpha"
+                  type="number"
+                  min={0.01}
+                  max={0.5}
+                  step={0.01}
+                  value={form.anomaly_alpha}
+                  onChange={(e) =>
+                    setForm({ ...form, anomaly_alpha: e.target.value })
+                  }
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="set-anomaly-window">
+                  Rolling window (30–1000)
+                </Label>
+                <Input
+                  id="set-anomaly-window"
+                  type="number"
+                  min={30}
+                  max={1000}
+                  step={1}
+                  value={form.anomaly_window}
+                  onChange={(e) =>
+                    setForm({ ...form, anomaly_window: e.target.value })
+                  }
+                  required
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Anomaly detection learns what is normal for each device and
+              marks latency or packet loss that is k standard deviations above
+              it for m readings in a row. It is advisory: it adds a badge and
+              chart markers, and never changes a status or opens an incident.
+              Alpha only matters to the EWMA detector and the window only to
+              the rolling one. Changing any of these starts every detector
+              afresh (30 readings of warm-up).
             </p>
             {success !== null && (
               <p className="text-sm text-green-600">{success}</p>

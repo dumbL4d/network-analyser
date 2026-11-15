@@ -18,6 +18,11 @@ entire warehouse LAN so the whole system runs on one machine.
   default), so besides latency the monitor measures how many were lost and
   how much the round-trip time varies, and counts too much of either as
   degraded.
+- **Anomaly detection** — each device's latency and packet loss are compared
+  with that device's own learned baseline (an EWMA or a rolling z-score).
+  Readings that stand out get an advisory badge and chart markers; they never
+  change a status or open an incident. Measured results:
+  [docs/anomaly-evaluation.md](docs/anomaly-evaluation.md).
 - **Debounced status** — a device changes state only after several polls in a
   row agree (3 to get worse, 2 to recover by default), so one lost ping does
   not raise an incident.
@@ -78,6 +83,7 @@ flowchart LR
         POLL["Poll loop<br/>(background task)"]
         PING["Ping engine<br/>(icmplib, async ICMP)"]
         DEB["Debouncer<br/>(raw result to confirmed status)"]
+        AN["Anomaly detectors<br/>(per device and metric, advisory)"]
         ST["StatusStore<br/>(snapshot + pub/sub)"]
         HS["HistoryStore<br/>(recent samples, hot cache)"]
         FS["FlapStore<br/>(status changes, hot cache)"]
@@ -120,6 +126,9 @@ flowchart LR
     POLL --> PING
     PING -- "ICMP echo" --> SIM
     POLL -- "raw results" --> DEB
+    POLL -- "raw readings" --> AN
+    AN -. "what is unusual (no status changes)" .-> ST
+    AN -- "anomaly events" --> DB
     DEB -- "confirmed status" --> ST
     DEB -- "confirmed status" --> FS
     POLL -- "raw readings" --> HS
@@ -148,10 +157,10 @@ user's browser straight to the backend.
 │   │   ├── main.py          App factory, lifespan (migrate, seed, warm-up, background tasks), SSE endpoint
 │   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth and audit deps
 │   │   ├── db/              SQLAlchemy/sqlmodel session, Alembic migrations/, seed scripts
-│   │   ├── models/          Device, DeviceLink, User, AppSettings, AuditEvent, the history tables and
-│   │   │                    incidents (SQLModel)
+│   │   ├── models/          Device, DeviceLink, User, AppSettings, AuditEvent, AnomalyEvent, the history
+│   │   │                    tables and incidents (SQLModel)
 │   │   ├── routers/         auth, devices, links, settings, users, history, flaps, incidents, stats,
-│   │   │                    analysis (SPOF, what-if), chaos (fault injection), audit, playbooks
+│   │   │                    analysis (SPOF, what-if), chaos (fault injection), anomalies, audit, playbooks
 │   │   ├── schemas/         Pydantic request/response DTOs
 │   │   ├── services/        ping_engine, debounce, poll_loop, status/history/flap stores, incident_analysis,
 │   │   │                    persistence (DB writes, warm-up, windowed history), rollup, retention,
@@ -159,8 +168,11 @@ user's browser straight to the backend.
 │   │   │                    topology_graph (graph algorithms), device_links (rules for extra links),
 │   │   │                    topology_analysis (SPOF report, what-if),
 │   │   │                    chaos (fault planning and control), chaos_client (talks to the agent),
-│   │   │                    rate_limit (login throttling), stream_tickets (SSE tickets), audit (audit log)
+│   │   │                    rate_limit (login throttling), stream_tickets (SSE tickets), audit (audit log),
+│   │   │                    anomaly/ (EWMA and rolling z-score detectors, one per device and metric)
 │   │   └── data/playbooks.py  Static guided-fix playbook content
+│   ├── scripts/             eval_anomaly.py (measures the anomaly detectors on synthetic traces),
+│   │                        manual_ping_test.py
 │   ├── tests/               pytest suite (temporary SQLite DB, fake ping, no ICMP)
 │   ├── alembic.ini          Alembic command-line config (the app migrates itself at startup)
 │   └── Dockerfile
@@ -181,6 +193,7 @@ user's browser straight to the backend.
 │   ├── chaos-agent/         Fault injection executor: the only service on the Docker socket
 │   └── README.md            Deployment runbook
 └── docs/
+    ├── anomaly-evaluation.md  Measured precision, recall and delay of the anomaly detectors
     ├── chaos.md             Fault injection: architecture, risks, scenarios
     └── security.md          Threat model, what is mitigated, known limitations
 ```
@@ -204,11 +217,12 @@ flowchart TD
     C --> D["Load devices (id, ip) from Device table"]
     D --> E["ping_all()<br/>all devices at once, several pings each (icmplib)"]
     E --> F["classify_probes() per device: the RAW result<br/>healthy / degraded / down / unknown<br/>from latency, packet loss and jitter"]
-    F --> K["debouncer.apply()<br/>raw results in, CONFIRMED status out"]
-    F --> H["history_store.record()<br/>raw readings, rolling deques"]
+    F --> N["anomaly_registry.observe()<br/>marks unusual latency or loss on a reading<br/>(advisory: no status changes)"]
+    N --> K["debouncer.apply()<br/>raw results in, CONFIRMED status out"]
+    N --> H["history_store.record()<br/>raw readings, rolling deques"]
     K --> G["status_store.update()<br/>confirmed status, notify SSE subscribers"]
     K --> I["flap_store.record()<br/>confirmed status changes"]
-    I --> P["persist_cycle() in a worker thread<br/>samples + transitions, one transaction"]
+    I --> P["persist_cycle() in a worker thread<br/>samples + transitions + anomaly events, one transaction"]
     P --> T["incident_tracker.track() in a worker thread<br/>open / update / resolve stored incidents"]
     T --> J["asyncio.sleep(interval)"]
     G --> J
@@ -341,7 +355,8 @@ the confirmed status plus the raw details. This one has just missed a poll:
     "latency_min_ms": null,
     "latency_max_ms": null,
     "loss_pct": 100.0,
-    "jitter_ms": null
+    "jitter_ms": null,
+    "anomaly": null
   }
 }
 ```
@@ -353,6 +368,10 @@ the confirmed status plus the raw details. This one has just missed a poll:
   `jitter_ms` the jitter (see "Probing" above).
 - `consecutive_failures` / `consecutive_successes` count the polls in a row
   that were not healthy / were healthy.
+- `anomaly` is advisory: `null`, or what the anomaly detector finds unusual,
+  per metric, for example
+  `{"latency": {"value": 60.5, "expected": 10.5, "score": 50.0, "since": "..."}}`
+  (see [Anomaly detection](#anomaly-detection)). It does not affect `status`.
 
 Things to know:
 
@@ -516,6 +535,7 @@ hour ago is not credited with a full day of uptime.
 | `DELETE` | `/api/links/{id}`                 | **admin**   | Delete a link                                 |
 | `GET`    | `/api/history/{id}`               | user        | Latency history; `?window=` for longer ranges |
 | `GET`    | `/api/flaps`                      | user        | Flap counts (last 30 days), highest first     |
+| `GET`    | `/api/anomalies`                  | user        | Recent anomaly events (advisory), newest first |
 | `GET`    | `/api/incidents`                  | user        | Live root-cause/collateral incident set       |
 | `GET`    | `/api/incidents/history`          | user        | Stored incidents, newest first (see below)    |
 | `GET`    | `/api/incidents/{id}`             | user        | One stored incident with its timeline         |
@@ -553,6 +573,13 @@ hour ago is not credited with a full day of uptime.
 wrong passwords in 5 minutes for one username from one address (or 20 from
 one address) the login answers 429 with a `Retry-After` header. See
 [Security](#security).
+
+`GET /api/anomalies` takes `device_id` (optional) and `limit` (1–200, default
+50) and returns
+`[{id, device_id, metric, detector, started_at, ended_at, value, expected, score}]`,
+newest first. `ended_at` is null while the anomaly is still going on; `value`
+is the reading that confirmed it and `expected` the baseline it was compared
+with.
 
 `GET /api/audit` takes `actor` (a username), `action` (for example
 `auth.login_failed`), `limit` (1–200, default 50) and `offset`, and returns
@@ -677,6 +704,78 @@ Two endpoints expose the engine:
   incident analysis. The total blast radius is the number of devices cut
   off.
 
+### Anomaly detection
+
+A fixed threshold ("degraded above 100 ms") does not know what is normal for a
+device. 40 ms is fine for a link to another site and alarming for a PLC that
+has always answered in 2 ms. An anomaly detector learns each device's own
+baseline, reading by reading, and marks the readings that stand out from it.
+There is one detector per device and per metric (latency, packet loss), in
+`backend/app/services/anomaly/`.
+
+**Advisory.** An anomaly adds a badge and chart markers. It never changes a
+device's status, raw or confirmed, and never opens an incident: the detectors
+only add an `anomaly` field to a reading and leave everything else alone.
+
+Both detectors judge a reading the same way and are interchangeable (one
+`Detector` interface, chosen in the settings):
+
+```
+score     = (reading − mean) / max(std, floor)     a one-sided z-score
+above     = score > k
+anomalous = this reading and the m − 1 before it were all above
+```
+
+Only readings above the baseline count: a device that got faster is not a
+problem. The floor (1 ms of latency, 5 points of loss) keeps a perfectly
+steady device from making the smallest wobble look enormous. No reading is
+judged before a detector has seen 30 (the warm-up).
+
+| Detector | Its baseline (mean, std) | Update per reading | Time | Memory |
+| --- | --- | --- | --- | --- |
+| EWMA (`EwmaDetector`) | exponentially weighted: a reading's weight shrinks by (1 − alpha) with every newer one | `mean += alpha·(x − mean)`, `var = (1 − alpha)·(var + alpha·(x − mean)²)` | O(1) | O(1): two numbers |
+| Rolling z-score (`RollingZScoreDetector`) | the last W readings | add x to a running sum and sum of squares, subtract the reading that leaves the window | O(1) | O(W): the window, in a deque |
+
+- **EWMA freezes.** A reading above the threshold is not learned, so a spike
+  cannot pull the baseline up and hide itself, and an anomaly lasts for as long
+  as the readings stay above the baseline of before it began. The price: a
+  change that is there to stay keeps being reported until the detectors are
+  reset, which happens whenever an anomaly setting is changed.
+- **The rolling window learns from everything.** A level that stays becomes
+  normal after W readings on its own, but a spike widens the window's spread
+  and can hide the next one.
+- **Running sums are exact enough.** `variance = sum_of_squares / n − mean²`
+  costs O(1) instead of the O(W) of adding the window up again. The tests
+  compare it with a recomputation on random data after every reading.
+
+| Setting            | Default | Allowed            | Meaning                                              |
+| ------------------ | ------- | ------------------ | ---------------------------------------------------- |
+| `anomaly_enabled`  | `true`  | true / false       | Switch detection on or off                           |
+| `anomaly_detector` | `ewma`  | `ewma`, `rolling`  | Which detector                                       |
+| `anomaly_k`        | `3`     | 1 – 10             | Standard deviations above the baseline that count    |
+| `anomaly_m`        | `3`     | 1 – 20             | Readings in a row that have to be above              |
+| `anomaly_alpha`    | `0.1`   | 0.01 – 0.5         | EWMA only: how fast the baseline forgets             |
+| `anomaly_window`   | `60`    | 30 – 1000          | Rolling only: how many readings it looks back on     |
+
+They are edited in Admin, Settings and re-read every poll cycle. Changing one
+starts every detector afresh, and ends the anomalies in progress. Detectors
+live in memory, so they also start afresh when the backend restarts (30
+readings of warm-up, about five minutes), and a device that has been deleted
+loses its detectors in the next cycle. A poll without a reply is not judged:
+a device that answers nothing is "down", which is the status's business.
+
+**Does it work?** `backend/scripts/eval_anomaly.py` measures both detectors
+and a fixed threshold on synthetic traces with known anomalies. In short, from
+[docs/anomaly-evaluation.md](docs/anomaly-evaluation.md):
+
+- the EWMA detector (the default) caught 99% of the spikes and every step, two
+  readings after they began, with one false alarm in 114,000 readings, with or
+  without a daily rhythm in the baseline;
+- a fixed threshold on the same traces dropped to a precision of 0.12 once the
+  baseline had a daily rhythm;
+- neither detector caught a slow drift. The fixed thresholds of the status
+  classification stay in force for that.
+
 ## Security
 
 The threat model, the details and the known limitations are in
@@ -759,7 +858,9 @@ failing (the browser's own reconnect would reuse the spent ticket).
 
 The Topology page draws parent links in grey and extra links as blue dashed
 lines, and marks every single point of failure with a `SPOF n` badge, n being
-its blast radius. Its What-if panel lists the devices: tick the ones to fail,
+its blast radius. A device whose latency or packet loss is out of the ordinary
+gets an `ANOMALY` badge (hover for what is unusual); its colour and status
+stay what they are. Its What-if panel lists the devices: tick the ones to fail,
 press Simulate, and the graph shows the predicted statuses (`failed`,
 `cut off`) next to the predicted root causes and the total blast radius. Reset
 returns to the live view. The Admin panel has a Links tab to list, add and
@@ -787,7 +888,9 @@ is shown under the chart.
 
 The device page switches its chart between latency, packet loss and jitter,
 and shows the current loss and jitter next to the current latency. Each chart
-has a dashed line where "degraded" begins, taken from the settings. The Loss &
+has a dashed line where "degraded" begins, taken from the settings, and the
+periods the anomaly detector found unusual are shaded on the latency and loss
+charts. The Loss &
 jitter tab of Metrics lists every device, worst packet loss first, with a
 sparkline, the mean and the peak for each of the two; a figure at or over its
 threshold is highlighted.
@@ -981,6 +1084,10 @@ flap counts survive a backend restart.
   [Security](#security)). Columns: `ts`, `actor`, `action`, `target`, `ip`,
   `details` (JSON). Rows are only ever added, and are kept until the database
   is deleted.
+- **`anomaly_event`**: one row per anomaly a detector found (see
+  [Anomaly detection](#anomaly-detection)). Columns: `device_id`, `metric`,
+  `detector`, `started_at`, `ended_at` (null while it lasts), `value`,
+  `expected`, `score`. Kept as long as status transitions.
 
 `latency_sample` and `status_transition` are indexed on `(device_id, ts)`, and
 `latency_rollup_1m` is unique on `(device_id, bucket_start)`. `incident` has a
@@ -1021,7 +1128,8 @@ flowchart LR
    samples older than `RAW_RETENTION_HOURS` are summarised into 1-minute
    rollups and deleted.
 4. **Expire.** The same job deletes rollups older than `ROLLUP_RETENTION_DAYS`
-   and transitions older than `TRANSITION_RETENTION_DAYS`.
+   and transitions older than `TRANSITION_RETENTION_DAYS`, and with them the
+   anomaly events that began before then.
 
 The rollup is safe to run again at any time. Each batch of raw samples is
 added to the rollups and deleted in the same transaction, so a sample is
@@ -1040,7 +1148,7 @@ Docker deployment):
 | ---------------------------- | ------- | -------------------------------------------------------------------- |
 | `RAW_RETENTION_HOURS`        | `24`    | Raw samples older than this are rolled up to 1-minute rows           |
 | `ROLLUP_RETENTION_DAYS`      | `30`    | Rollups older than this are deleted                                  |
-| `TRANSITION_RETENTION_DAYS`  | `30`    | Transitions older than this are deleted; also the flap-count window  |
+| `TRANSITION_RETENTION_DAYS`  | `30`    | Transitions and anomaly events older than this are deleted; also the flap-count window |
 | `RETENTION_INTERVAL_SECONDS` | `3600`  | How often the retention job runs                                     |
 | `HISTORY_MAX_SAMPLES`        | `36`    | Recent samples per device kept in memory                             |
 
@@ -1127,6 +1235,8 @@ its data.
 - `0007` adds the four probe settings to `appsettings`, and packet loss and
   jitter to `latency_sample` and `latency_rollup_1m`. Existing history keeps
   its latency and has no loss or jitter.
+- `0008` adds the six anomaly settings to `appsettings` and the
+  `anomaly_event` table.
 
 Every change to a model in `backend/app/models/` needs a migration:
 
@@ -1135,7 +1245,7 @@ cd backend
 source .venv/bin/activate
 alembic upgrade head      # bring your local database up to date first
 # ...edit the model...
-alembic revision --autogenerate --rev-id 0008 -m "describe the change"
+alembic revision --autogenerate --rev-id 0009 -m "describe the change"
 # review the new file in app/db/migrations/versions/, then:
 alembic upgrade head      # or simply start the backend
 pytest                    # test_migrations.py fails if a model has no migration
@@ -1197,6 +1307,11 @@ seeding.
 The graph algorithms are also checked on seeded random graphs against slow,
 obvious implementations (see [Algorithms](#algorithms)). A failing case prints
 its seed, so it can be reproduced.
+
+The anomaly detectors' running statistics are compared with a recomputation
+from scratch on random data, and `test_eval_anomaly.py` runs the evaluation
+script and checks that the figures quoted in
+[docs/anomaly-evaluation.md](docs/anomaly-evaluation.md) are what it prints.
 
 Frontend checks:
 

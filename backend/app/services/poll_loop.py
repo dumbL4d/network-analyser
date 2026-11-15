@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models.device import Device
 from app.models.settings import AppSettings
+from app.services.anomaly.registry import AnomalyConfig, anomaly_registry
 from app.services.debounce import (
     DEFAULT_FAILURE_THRESHOLD,
     DEFAULT_RECOVERY_THRESHOLD,
@@ -53,12 +54,14 @@ async def run_poll_loop(
     remain low-level concerns read from the static .env-backed ``Settings``
     object.
 
-    Each cycle's raw readings go through the debouncer. The status store and
-    the flap store receive the CONFIRMED statuses; the history store keeps the
-    raw readings. The cycle is then written to the database (one sample per
-    device plus any status transitions), and the incident tracker opens,
-    updates or resolves the stored incidents. Both run in a worker thread, so
-    they never block the event loop.
+    Each cycle's raw readings first go to the anomaly detectors, which only
+    add what they find to a reading (advisory: no status is changed), and then
+    through the debouncer. The status store and the flap store receive the
+    CONFIRMED statuses; the history store keeps the raw readings. The cycle is
+    then written to the database (one sample per device plus any status
+    transitions and anomaly events), and the incident tracker opens, updates
+    or resolves the stored incidents. Both run in a worker thread, so they
+    never block the event loop.
 
     ``ping`` and ``sleep`` default to the real ICMP ping and ``asyncio.sleep``.
     They are parameters only so tests can inject fakes and step the loop one
@@ -90,6 +93,7 @@ async def run_poll_loop(
                 gap_ms = DEFAULT_PING_GAP_MS
                 loss_warn_pct = DEFAULT_LOSS_WARN_PCT
                 jitter_warn_ms = DEFAULT_JITTER_WARN_MS
+                anomaly_config = AnomalyConfig()
             else:
                 interval = app_settings.poll_interval_seconds
                 warn_threshold = app_settings.latency_warn_ms
@@ -100,6 +104,14 @@ async def run_poll_loop(
                 gap_ms = app_settings.ping_gap_ms
                 loss_warn_pct = app_settings.loss_warn_pct
                 jitter_warn_ms = app_settings.jitter_warn_ms
+                anomaly_config = AnomalyConfig(
+                    enabled=app_settings.anomaly_enabled,
+                    detector=app_settings.anomaly_detector,
+                    k=app_settings.anomaly_k,
+                    m=app_settings.anomaly_m,
+                    alpha=app_settings.anomaly_alpha,
+                    window=app_settings.anomaly_window,
+                )
 
             devices = _load_devices()
             results = await ping_all(
@@ -114,6 +126,11 @@ async def run_poll_loop(
                 loss_warn_pct=loss_warn_pct,
                 jitter_warn_ms=jitter_warn_ms,
             )
+            # Advisory: the detectors add what they find unusual to a reading
+            # and leave its status alone.
+            results, anomalies_started, anomalies_ended = anomaly_registry.observe(
+                results, anomaly_config
+            )
             # `results` are this cycle's raw readings. The debouncer works out
             # each device's confirmed status, and forgets devices that were not
             # polled this cycle (deleted ones).
@@ -124,7 +141,9 @@ async def run_poll_loop(
             transitions = flap_store.record(confirmed)
             try:
                 # One transaction per cycle, off the event loop.
-                await asyncio.to_thread(persist_cycle, confirmed, transitions)
+                await asyncio.to_thread(
+                    persist_cycle, confirmed, transitions, anomalies_started, anomalies_ended
+                )
             except Exception:
                 logger.error(
                     "Could not save this poll cycle to the database; live "

@@ -2,13 +2,14 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { useNavigate } from 'react-router-dom'
 
 import { Card } from '@/components/ui/card'
+import { describeAnomaly } from '@/lib/anomaly'
 import { getStatusColor } from '@/lib/statusStyles'
 import type { DeviceNode } from '@/lib/topologyLayout'
 import { cn } from '@/lib/utils'
 
 export function DeviceNode({ data }: NodeProps<DeviceNode>) {
   const navigate = useNavigate()
-  const { device, status, blastRadius, predicted } = data
+  const { device, status, blastRadius, predicted, anomaly } = data
   const statusKey = status ?? 'unknown'
   const color = getStatusColor(statusKey)
 
@@ -31,6 +32,16 @@ export function DeviceNode({ data }: NodeProps<DeviceNode>) {
           className="absolute -right-2 -top-2.5 rounded-full bg-purple-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white shadow"
         >
           SPOF {blastRadius}
+        </span>
+      )}
+      {/* Advisory: the status and its colour are not affected. */}
+      {anomaly && (
+        <span
+          data-testid={`node-anomaly-${device.id}`}
+          title={`${describeAnomaly(anomaly)} (advisory: the status is unchanged)`}
+          className="absolute -left-2 -top-2.5 rounded-full bg-fuchsia-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white shadow"
+        >
+          ANOMALY
         </span>
       )}
       <div className="flex items-center gap-2">

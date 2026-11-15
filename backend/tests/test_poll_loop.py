@@ -130,6 +130,7 @@ async def test_the_api_reports_confirmed_status_and_raw_details(client, admin_he
         "status", "latency_ms", "timestamp",  # the original keys
         "raw_status", "consecutive_failures", "consecutive_successes",  # added
         "latency_min_ms", "latency_max_ms", "loss_pct", "jitter_ms",  # added with multi-ping
+        "anomaly",  # added with anomaly detection
     }
     assert (pending["status"], pending["raw_status"], pending["consecutive_failures"]) == ("healthy", "down", 1)
     assert pending["latency_ms"] is None  # the latest reading got no reply

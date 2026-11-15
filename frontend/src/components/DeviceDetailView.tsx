@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -19,7 +20,8 @@ import { useDeviceHistory } from '@/hooks/useDeviceHistory'
 import { useDevices } from '@/hooks/useDevices'
 import { usePolled } from '@/hooks/usePolled'
 import { useStatusStream } from '@/hooks/useStatusStream'
-import { fetchSettings } from '@/lib/api'
+import { describeAnomaly } from '@/lib/anomaly'
+import { fetchAnomalies, fetchSettings } from '@/lib/api'
 import {
   METRICS,
   describeResolution,
@@ -31,6 +33,7 @@ import {
 import { getStatusColor } from '@/lib/statusStyles'
 import { cn } from '@/lib/utils'
 import type {
+  AnomalyEvent,
   DeviceOut,
   DeviceStatusDTO,
   HistoryPoint,
@@ -68,12 +71,40 @@ function formatReading(
     : `${value.toFixed(digits)} ${unit}`
 }
 
+/**
+ * Which points of the chart each anomaly covers: from the point at (or just
+ * before) its beginning to the point at (or just before) its end, or the last
+ * point while it is still going on. Anomalies outside the chart are left out.
+ */
+function anomalySpans(
+  chartData: ChartDatum[],
+  anomalies: AnomalyEvent[],
+): { id: number; from: number; to: number }[] {
+  const times = chartData.map((datum) => Date.parse(datum.timestamp))
+  if (times.length === 0) return []
+  // The last point at or before a moment; -1 if the chart begins after it.
+  const pointAt = (moment: number) => {
+    let point = -1
+    while (point + 1 < times.length && times[point + 1] <= moment) point += 1
+    return point
+  }
+  return anomalies.flatMap((anomaly) => {
+    const to = pointAt(
+      anomaly.ended_at === null ? Infinity : Date.parse(anomaly.ended_at),
+    )
+    const began = Date.parse(anomaly.started_at)
+    if (to === -1 || began > times[times.length - 1]) return []
+    return [{ id: anomaly.id, from: Math.max(pointAt(began), 0), to }]
+  })
+}
+
 function HistoryChart({
   history,
   range,
   bucketed,
   metric,
   threshold,
+  anomalies,
 }: {
   history: HistoryPoint[]
   range: HistoryRange
@@ -82,9 +113,12 @@ function HistoryChart({
   metric: HistoryMetric
   /** Where "degraded" begins for this metric; drawn as a dashed line. */
   threshold: number | undefined
+  /** What the anomaly detector found for this metric; shaded on the chart. */
+  anomalies: AnomalyEvent[]
 }) {
   const spec = METRICS[metric]
   const chartData = toChartData(history, metric)
+  const spans = anomalySpans(chartData, anomalies)
 
   // Simple heuristic: red when the most recent point got no reply.
   const lastPoint = history.length ? history[history.length - 1] : null
@@ -162,6 +196,32 @@ function HistoryChart({
                 fill: '#b45309',
               }}
             />
+          )}
+          {/* Advisory: the periods the anomaly detector found unusual. One
+              that fits in a single point is drawn as a line. */}
+          {spans.map((span) =>
+            span.to > span.from ? (
+              <ReferenceArea
+                key={span.id}
+                x1={span.from}
+                x2={span.to}
+                xAxisId={0}
+                yAxisId={0}
+                fill="#c026d3"
+                fillOpacity={0.12}
+                stroke="#c026d3"
+                strokeOpacity={0.45}
+              />
+            ) : (
+              <ReferenceLine
+                key={span.id}
+                x={span.from}
+                xAxisId={0}
+                yAxisId={0}
+                stroke="#c026d3"
+                strokeDasharray="2 2"
+              />
+            ),
           )}
           {/* The band only means something for buckets. */}
           {bucketed && (
@@ -243,6 +303,16 @@ export default function DeviceDetailView() {
   } = useDeviceHistory(deviceId, range)
   // The thresholds for the charts' "degraded from" lines.
   const { data: settings } = usePolled(fetchSettings, 'settings', 60_000)
+  // What the anomaly detector found for this device, for the chart markers.
+  const { data: anomalyEvents } = usePolled(
+    () => fetchAnomalies({ deviceId, limit: 200 }),
+    deviceId,
+    10_000,
+  )
+  const chartAnomalies = (anomalyEvents ?? []).filter(
+    (event) => event.metric === metric,
+  )
+  const anomaly = statuses[deviceId]?.anomaly ?? null
   const thresholds: Record<HistoryMetric, number | undefined> = {
     latency: settings?.latency_warn_ms,
     loss: settings?.loss_warn_pct,
@@ -333,6 +403,14 @@ export default function DeviceDetailView() {
                 {formatReading(statuses[deviceId]?.jitter_ms, 'ms')}
               </span>
             </InfoRow>
+            <InfoRow label="Anomaly (advisory)">
+              <span
+                data-testid="current-anomaly"
+                className={anomaly ? 'text-fuchsia-700' : 'text-muted-foreground'}
+              >
+                {anomaly ? describeAnomaly(anomaly) : 'None'}
+              </span>
+            </InfoRow>
             <InfoRow label="Parent">
               {device.parent_id ? (
                 <Link
@@ -397,6 +475,7 @@ export default function DeviceDetailView() {
                     bucketed={resolution !== 'raw'}
                     metric={metric}
                     threshold={thresholds[metric]}
+                    anomalies={chartAnomalies}
                   />
                   <p
                     data-testid="history-resolution"
@@ -405,6 +484,15 @@ export default function DeviceDetailView() {
                     Resolution: {describeResolution(resolution, metric)} ·{' '}
                     {history.length} points
                   </p>
+                  {chartAnomalies.length > 0 && (
+                    <p
+                      data-testid="anomaly-legend"
+                      className="mt-1 text-xs text-fuchsia-700"
+                    >
+                      Shaded: what the anomaly detector found unusual
+                      (advisory: the status is not affected).
+                    </p>
+                  )}
                 </div>
               )}
             </CardContent>

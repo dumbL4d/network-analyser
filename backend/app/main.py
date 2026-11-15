@@ -16,6 +16,7 @@ from app.db.seed_users import seed_default_users
 from app.db.session import init_db
 from app.models.user import User
 from app.routers.analysis import router as analysis_router
+from app.routers.anomalies import router as anomalies_router
 from app.routers.audit import router as audit_router
 from app.routers.auth import router as auth_router
 from app.routers.chaos import router as chaos_router
@@ -65,9 +66,10 @@ def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
     """Shape the store's state into the JSON payload sent to clients.
 
     ``status`` is the confirmed (debounced) status. ``raw_status`` and the two
-    counters were added with debouncing, and the last four keys with multi-ping
-    probing (``latency_ms`` is the average of a cycle's probes); the first
-    three keys are unchanged.
+    counters were added with debouncing, the next four keys with multi-ping
+    probing (``latency_ms`` is the average of a cycle's probes), and
+    ``anomaly`` with anomaly detection (advisory: None, or what is unusual
+    per metric); the first three keys are unchanged.
     """
     return {
         device_id: {
@@ -81,6 +83,16 @@ def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
             "latency_max_ms": status.latency_max_ms,
             "loss_pct": status.loss_pct,
             "jitter_ms": status.jitter_ms,
+            "anomaly": status.anomaly
+            and {
+                metric: {
+                    "value": finding.value,
+                    "expected": finding.expected,
+                    "score": finding.score,
+                    "since": finding.since.isoformat(),
+                }
+                for metric, finding in status.anomaly.items()
+            },
         }
         for device_id, status in snapshot.items()
     }
@@ -135,6 +147,7 @@ app.add_middleware(
 )
 
 app.include_router(analysis_router)
+app.include_router(anomalies_router)
 app.include_router(audit_router)
 app.include_router(auth_router)
 app.include_router(chaos_router)

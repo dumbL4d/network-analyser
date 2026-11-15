@@ -168,7 +168,7 @@ async def test_the_database_write_runs_off_the_event_loop(monkeypatch):
     monkeypatch.setattr(
         poll_loop,
         "persist_cycle",
-        lambda readings, transitions: writer_threads.append(threading.current_thread()),
+        lambda readings, transitions, *anomalies: writer_threads.append(threading.current_thread()),
     )
 
     await run_cycles(1, FakePing())
@@ -179,7 +179,7 @@ async def test_the_database_write_runs_off_the_event_loop(monkeypatch):
 
 
 async def test_a_failed_database_write_does_not_stop_monitoring(monkeypatch):
-    def disk_full(readings, transitions) -> None:
+    def disk_full(readings, transitions, *anomalies) -> None:
         raise RuntimeError("disk full")
 
     monkeypatch.setattr(poll_loop, "persist_cycle", disk_full)

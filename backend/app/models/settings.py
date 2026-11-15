@@ -39,3 +39,14 @@ class AppSettings(SQLModel, table=True):
     ping_gap_ms: int = Field(default=200)
     loss_warn_pct: float = Field(default=20.0)
     jitter_warn_ms: float = Field(default=30.0)
+    # Anomaly detection (app.services.anomaly), advisory only. Which detector
+    # ("ewma" or "rolling"), how many standard deviations above the baseline
+    # count (k), for how many readings in a row (m), and the detector's own
+    # parameter: alpha for "ewma", the window size for "rolling". The defaults
+    # mirror AnomalyConfig.
+    anomaly_enabled: bool = Field(default=True)
+    anomaly_detector: str = Field(default="ewma")
+    anomaly_k: float = Field(default=3.0)
+    anomaly_m: int = Field(default=3)
+    anomaly_alpha: float = Field(default=0.1)
+    anomaly_window: int = Field(default=60)

@@ -151,6 +151,12 @@ def test_upgrading_an_existing_database_keeps_its_data(empty_database, create_ex
             "ping_gap_ms": 200,
             "loss_warn_pct": 20.0,
             "jitter_warn_ms": 30.0,
+            "anomaly_enabled": 1,
+            "anomaly_detector": "ewma",
+            "anomaly_k": 3.0,
+            "anomaly_m": 3,
+            "anomaly_alpha": 0.1,
+            "anomaly_window": 60,
         }
     ]
 
@@ -189,6 +195,10 @@ def test_history_tables_and_their_indexes_exist_after_upgrading(empty_database):
         "loss_avg", "loss_max", "loss_count", "jitter_avg", "jitter_max", "jitter_count",
     ]
     assert columns["status_transition"] == ["id", "device_id", "ts", "from_status", "to_status"]
+    assert columns["anomaly_event"] == [
+        "id", "device_id", "metric", "detector", "started_at", "ended_at", "value", "expected", "score",
+    ]
+    assert ("ix_anomaly_event_device_id_started_at", ("device_id", "started_at")) in indexes["anomaly_event"]
     assert ("ix_latency_sample_device_id_ts", ("device_id", "ts")) in indexes["latency_sample"]
     assert ("ix_status_transition_device_id_ts", ("device_id", "ts")) in indexes["status_transition"]
     assert uniques == [("uq_latency_rollup_1m_device_id_bucket_start", ("device_id", "bucket_start"))]

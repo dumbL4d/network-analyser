@@ -2,27 +2,31 @@
 
 Three jobs:
 
-* the write path: after every poll cycle, store that cycle's samples and
-  status transitions in ONE transaction (``persist_cycle``);
+* the write path: after every poll cycle, store that cycle's samples, status
+  transitions and anomaly events in ONE transaction (``persist_cycle``);
 * the warm-up: at startup, refill the in-memory stores from the database, so
   history, flap counts and debounce state survive a restart (``warm_caches``);
-* windowed history reads for the charts (``history_window``).
+* reads for the charts: windowed history (``history_window``) and the recent
+  anomaly events (``recent_anomalies``).
 
 Everything here is synchronous, like the rest of the database code. The poll
 loop and the retention job call it through ``asyncio.to_thread`` so the event
 loop is never blocked; request handlers already run in worker threads.
 """
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select, update
 
 from app.core.config import settings
 from app.db.session import engine
+from app.models.anomaly import AnomalyEvent
 from app.models.device import Device
 from app.models.settings import AppSettings
 from app.models.telemetry import LatencyRollup1m, LatencySample, StatusTransition
 from app.schemas.history import HistoryPointOut, HistoryWindowOut
+from app.services.anomaly.registry import AnomalyEnd, AnomalyStart
 from app.services.debounce import MAX_THRESHOLD, debouncer, state_from_history
 from app.services.flap_store import Transition, flap_store
 from app.services.history_store import HistorySample, history_store
@@ -32,6 +36,7 @@ from app.services.rollup import MINUTE, Bucket, rebucket, sample_bucket
 SAMPLES = LatencySample.__table__
 ROLLUPS = LatencyRollup1m.__table__
 TRANSITIONS = StatusTransition.__table__
+ANOMALIES = AnomalyEvent.__table__
 
 # window -> (how far back it reaches, bucket size in seconds or None for raw).
 # The bucket sizes keep every window at roughly 300-360 points per device.
@@ -87,9 +92,15 @@ def _now() -> datetime:
 # --- write path ----------------------------------------------------------------
 
 
-def persist_cycle(readings: list[DeviceStatus], transitions: list[Transition]) -> None:
-    """Store one poll cycle: a sample per device and every confirmed status
-    change, in ONE transaction (all of it is saved, or none of it)."""
+def persist_cycle(
+    readings: list[DeviceStatus],
+    transitions: list[Transition],
+    anomalies_started: Sequence[AnomalyStart] = (),
+    anomalies_ended: Sequence[AnomalyEnd] = (),
+) -> None:
+    """Store one poll cycle: a sample per device, every confirmed status
+    change, and the anomalies that began or ended, in ONE transaction (all of
+    it is saved, or none of it)."""
     samples = [
         {
             "device_id": reading.device_id,
@@ -111,13 +122,41 @@ def persist_cycle(readings: list[DeviceStatus], transitions: list[Transition]) -
         }
         for transition in transitions
     ]
-    if not samples and not changes:
+    if not (samples or changes or anomalies_started or anomalies_ended):
         return
     with engine.begin() as connection:
         if samples:
             connection.execute(insert(SAMPLES), samples)
         if changes:
             connection.execute(insert(TRANSITIONS), changes)
+        # Ends before starts: an anomaly that ends closes the event that is
+        # open, never one that begins in this same cycle.
+        for end in anomalies_ended:
+            connection.execute(
+                update(ANOMALIES)
+                .where(
+                    ANOMALIES.c.device_id == end.device_id,
+                    ANOMALIES.c.metric == end.metric,
+                    ANOMALIES.c.ended_at.is_(None),
+                )
+                .values(ended_at=end.at)
+            )
+        if anomalies_started:
+            connection.execute(
+                insert(ANOMALIES),
+                [
+                    {
+                        "device_id": start.device_id,
+                        "metric": start.metric,
+                        "detector": start.detector,
+                        "started_at": start.at,
+                        "value": start.value,
+                        "expected": start.expected,
+                        "score": start.score,
+                    }
+                    for start in anomalies_started
+                ],
+            )
 
 
 # --- warm-up at startup ----------------------------------------------------------
@@ -192,6 +231,34 @@ def warm_caches(now: datetime | None = None) -> None:
 
     flap_store.restore(last_status, changes)
     debouncer.restore(states)
+    close_open_anomalies(now)
+
+
+def close_open_anomalies(now: datetime | None = None) -> None:
+    """End every anomaly event that is still open.
+
+    The detectors live in memory and start afresh with the backend, so after
+    a restart no anomaly is "in progress" any more. An open event is given
+    the time of the newest stored sample as its end: the last moment anything
+    was measured.
+    """
+    with engine.begin() as connection:
+        newest_sample = connection.execute(select(func.max(SAMPLES.c.ts))).scalar()
+        connection.execute(
+            update(ANOMALIES)
+            .where(ANOMALIES.c.ended_at.is_(None))
+            .values(ended_at=newest_sample or now or _now())
+        )
+
+
+def recent_anomalies(device_id: str | None = None, limit: int = 50) -> list:
+    """The most recent anomaly events, newest first; of one device if
+    ``device_id`` is given."""
+    query = select(ANOMALIES).order_by(ANOMALIES.c.started_at.desc(), ANOMALIES.c.id.desc()).limit(limit)
+    if device_id is not None:
+        query = query.where(ANOMALIES.c.device_id == device_id)
+    with engine.connect() as connection:
+        return list(connection.execute(query).all())
 
 
 # --- windowed history ------------------------------------------------------------

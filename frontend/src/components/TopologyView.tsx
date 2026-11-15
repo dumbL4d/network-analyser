@@ -59,6 +59,8 @@ export default function TopologyView() {
           status,
           predicted,
           blastRadius: blastRadius.get(node.id),
+          // Anomalies are about the live readings: none while a what-if is shown.
+          anomaly: simulation === null ? statuses[node.id]?.anomaly : null,
         },
       }
     })

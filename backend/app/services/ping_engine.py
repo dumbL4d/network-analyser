@@ -79,6 +79,19 @@ MIN_PING_GAP_MS, MAX_PING_GAP_MS = 10, 5000
 PROBE_BUDGET_SHARE = 0.8
 
 
+class MetricAnomaly(BaseModel):
+    """What an anomaly detector found unusual about one metric of a device
+    (app/services/anomaly). Advisory: it never changes the status."""
+
+    # This cycle's reading, and what the detector expected: its baseline.
+    value: float
+    expected: float
+    # How many standard deviations the reading is above the baseline.
+    score: float
+    # When this anomaly began.
+    since: datetime
+
+
 class DeviceStatus(BaseModel):
     """Transient (non-persisted) runtime status for a single device.
 
@@ -106,6 +119,9 @@ class DeviceStatus(BaseModel):
     latency_max_ms: float | None = None
     loss_pct: float | None = None
     jitter_ms: float | None = None
+    # The metrics ("latency", "loss") an anomaly detector currently finds
+    # unusual for this device, or None. Filled in by the anomaly registry.
+    anomaly: dict[str, MetricAnomaly] | None = None
 
 
 def classify_status(

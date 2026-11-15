@@ -1,6 +1,7 @@
 import type { AuditPage } from '@/types/audit'
 import type { ChaosState } from '@/types/chaos'
 import type {
+  AnomalyEvent,
   DeviceCreate,
   DeviceOut,
   DeviceStatusDTO,
@@ -500,6 +501,21 @@ export function chaosScenario(name: string): Promise<ChaosState> {
 export function chaosRestoreAll(): Promise<ChaosState> {
   return request<ChaosState>('/api/chaos/restore-all', {
     method: 'POST',
+    authenticated: true,
+  })
+}
+
+// --- Anomalies (advisory) -------------------------------------------------------
+
+/** The most recent anomaly events, newest first; of one device if given. */
+export function fetchAnomalies(
+  params: { deviceId?: string; limit?: number } = {},
+): Promise<AnomalyEvent[]> {
+  const query = new URLSearchParams()
+  if (params.deviceId) query.set('device_id', params.deviceId)
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  const suffix = query.size > 0 ? `?${query.toString()}` : ''
+  return request<AnomalyEvent[]>(`/api/anomalies${suffix}`, {
     authenticated: true,
   })
 }

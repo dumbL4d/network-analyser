@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.anomaly import DetectorKind
+
 
 class SettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -18,6 +20,12 @@ class SettingsOut(BaseModel):
     ping_gap_ms: int
     loss_warn_pct: float
     jitter_warn_ms: float
+    anomaly_enabled: bool
+    anomaly_detector: DetectorKind
+    anomaly_k: float
+    anomaly_m: int
+    anomaly_alpha: float
+    anomaly_window: int
 
 
 class SettingsUpdate(BaseModel):
@@ -38,3 +46,9 @@ class SettingsUpdate(BaseModel):
     ping_gap_ms: int | None = None
     loss_warn_pct: float | None = None
     jitter_warn_ms: float | None = None
+    anomaly_enabled: bool | None = None
+    anomaly_detector: DetectorKind | None = None
+    anomaly_k: float | None = None
+    anomaly_m: int | None = None
+    anomaly_alpha: float | None = None
+    anomaly_window: int | None = None

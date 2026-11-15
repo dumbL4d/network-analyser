@@ -18,6 +18,12 @@ DEFAULTS = {
     "ping_gap_ms": 200,
     "loss_warn_pct": 20.0,
     "jitter_warn_ms": 30.0,
+    "anomaly_enabled": True,
+    "anomaly_detector": "ewma",
+    "anomaly_k": 3.0,
+    "anomaly_m": 3,
+    "anomaly_alpha": 0.1,
+    "anomaly_window": 60,
 }
 
 
@@ -127,6 +133,12 @@ def test_the_admin_settings_form_payload_is_accepted(client, admin_headers):
         "ping_gap_ms": 250,
         "loss_warn_pct": 10.0,
         "jitter_warn_ms": 15.0,
+        "anomaly_enabled": False,
+        "anomaly_detector": "rolling",
+        "anomaly_k": 4.0,
+        "anomaly_m": 5,
+        "anomaly_alpha": 0.2,
+        "anomaly_window": 120,
     }
 
     response = _patch(client, admin_headers, **form)
@@ -244,3 +256,66 @@ def test_an_out_of_range_value_is_reported_before_the_fit(client, admin_headers)
     response = _patch(client, admin_headers, pings_per_cycle=50, ping_gap_ms=5000)
 
     assert response.json() == {"detail": "pings_per_cycle must be between 1 and 10"}
+
+
+# --- anomaly detection -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"anomaly_enabled": False},
+        {"anomaly_detector": "rolling"},
+        {"anomaly_k": 1},
+        {"anomaly_k": 10},
+        {"anomaly_m": 1},
+        {"anomaly_m": 20},
+        {"anomaly_alpha": 0.01},
+        {"anomaly_alpha": 0.5},
+        {"anomaly_window": 30},  # the warm-up
+        {"anomaly_window": 1000},
+    ],
+)
+def test_anomaly_settings_accept_the_ends_of_their_ranges(client, admin_headers, fields):
+    response = _patch(client, admin_headers, **fields)
+
+    assert response.status_code == 200
+    assert response.json() == {**DEFAULTS, **fields}
+    assert _settings(client, admin_headers) == response.json()  # persisted
+
+
+@pytest.mark.parametrize(
+    ("fields", "detail"),
+    [
+        ({"anomaly_k": 0.9}, "anomaly_k must be between 1 and 10"),
+        ({"anomaly_k": 10.1}, "anomaly_k must be between 1 and 10"),
+        ({"anomaly_m": 0}, "anomaly_m must be between 1 and 20"),
+        ({"anomaly_m": 21}, "anomaly_m must be between 1 and 20"),
+        ({"anomaly_alpha": 0.009}, "anomaly_alpha must be between 0.01 and 0.5"),
+        ({"anomaly_alpha": 0.51}, "anomaly_alpha must be between 0.01 and 0.5"),
+        ({"anomaly_window": 29}, "anomaly_window must be between 30 and 1000"),
+        ({"anomaly_window": 1001}, "anomaly_window must be between 30 and 1000"),
+    ],
+)
+def test_anomaly_settings_out_of_range_are_rejected(client, admin_headers, fields, detail):
+    response = _patch(client, admin_headers, **fields)
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": detail}
+    assert _settings(client, admin_headers) == DEFAULTS  # nothing was saved
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"anomaly_detector": "median"},  # not one of the two detectors
+        {"anomaly_detector": ""},
+        {"anomaly_enabled": "sometimes"},
+        {"anomaly_m": 2.5},
+        {"anomaly_window": 60.5},
+        {"anomaly_k": "three"},
+    ],
+)
+def test_anomaly_settings_of_the_wrong_kind_are_rejected(client, admin_headers, fields):
+    assert _patch(client, admin_headers, **fields).status_code == 422
+    assert _settings(client, admin_headers) == DEFAULTS

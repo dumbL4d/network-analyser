@@ -13,6 +13,34 @@ export const DEVICE_TYPES = [
 
 export type DeviceType = (typeof DEVICE_TYPES)[number]
 
+/** What an anomaly detector finds unusual about one metric of a device. */
+export interface MetricAnomaly {
+  /** The latest reading, and what the detector expected instead. */
+  value: number
+  expected: number
+  /** How many standard deviations above its baseline the reading is. */
+  score: number
+  /** When the anomaly began. */
+  since: string
+}
+
+/** The metrics ("latency", "loss") that are out of the ordinary right now. */
+export type DeviceAnomaly = Record<string, MetricAnomaly>
+
+/** GET /api/anomalies row: one anomaly a detector found. */
+export interface AnomalyEvent {
+  id: number
+  device_id: string
+  metric: 'latency' | 'loss'
+  detector: 'ewma' | 'rolling'
+  started_at: string
+  /** Null while the anomaly is still going on. */
+  ended_at: string | null
+  value: number
+  expected: number
+  score: number
+}
+
 export interface DeviceStatusDTO {
   /** Confirmed (debounced) status. */
   status: DeviceStatus
@@ -37,6 +65,11 @@ export interface DeviceStatusDTO {
    * Null unless at least two probes were answered.
    */
   jitter_ms: number | null
+  /**
+   * Advisory: what the anomaly detector finds unusual, per metric, or null.
+   * It never changes `status`.
+   */
+  anomaly: DeviceAnomaly | null
 }
 
 export interface DeviceOut {

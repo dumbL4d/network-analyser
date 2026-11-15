@@ -16,8 +16,15 @@ from app.services.history_store import history_store
 from app.services.status_store import status_store
 from tests.helpers import make_status, seed_devices
 
-# What a status carries about its probes when nothing was measured.
-NO_PROBE_DETAILS = {"latency_min_ms": None, "latency_max_ms": None, "loss_pct": None, "jitter_ms": None}
+# What a status carries about its probes when nothing was measured, and about
+# anomalies when no detector has looked at it.
+NO_PROBE_DETAILS = {
+    "latency_min_ms": None,
+    "latency_max_ms": None,
+    "loss_pct": None,
+    "jitter_ms": None,
+    "anomaly": None,
+}
 
 # --- health / status -----------------------------------------------------------
 
@@ -52,7 +59,8 @@ def test_status_returns_the_latest_reading_per_device(client, admin_headers):
             "raw_status": "healthy",
             "consecutive_failures": 0,
             "consecutive_successes": 0,
-            # ...and the ones added with multi-ping probing (none measured here).
+            # ...and the ones added with multi-ping probing and with anomaly
+            # detection (nothing measured or found here).
             **NO_PROBE_DETAILS,
         },
         "sw-ot": {
