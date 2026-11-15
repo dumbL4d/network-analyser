@@ -474,8 +474,14 @@ What the tracker does each cycle:
   the incident is resolved. A later failure of the same device is a **new**
   incident.
 
-Three cases are handled on purpose:
+Four cases are handled on purpose:
 
+- If a device below the root has an incident of its own (it failed first, or
+  a device between the two still answers), it is not counted as affected, and
+  neither is anything its incident already covers. So a device is never
+  counted for an incident and again for the one above it. (One case remains,
+  and only with extra links: collateral that several root causes cut off
+  together is listed under each of them.)
 - If an outage further up turns the root device into collateral, its incident
   is left as it is: the device is still down.
 - If the root device becomes `unknown` (the probe itself fails), the incident

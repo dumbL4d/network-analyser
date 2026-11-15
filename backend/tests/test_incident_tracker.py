@@ -15,6 +15,7 @@ from app.db.session import engine
 from app.models.incident import Incident, IncidentEvent
 from app.services import poll_loop
 from app.services.incident_analysis import analyze_incidents
+from app.services.incident_stats import summarize_incidents
 from app.services.incident_tracker import (
     AffectedChanged,
     Opened,
@@ -156,11 +157,43 @@ def test_a_deleted_root_device_resolves_its_incident():
 def test_an_outage_further_up_leaves_the_existing_incident_alone_and_opens_one_for_the_new_root():
     tracked = [open_incident(1, "sw-ot", ("scanner-1",))]
     # sw-edge (the parent of sw-ot) is now down too: sw-ot becomes collateral.
-    statuses = readings(at(90), down=("sw-edge", "sw-ot", "scanner-1"), failing_since={"sw-edge": at(70)})
+    statuses = readings(
+        at(90), down=("sw-edge", "sw-server", "sw-ot", "scanner-1"), failing_since={"sw-edge": at(70)}
+    )
 
+    # Incident 1 is untouched. The new incident counts sw-server only: sw-ot
+    # has its own incident, which already covers scanner-1.
     assert diff(tracked, statuses, at(90)) == [
-        Opened("sw-edge", at(90), at(70), "down", affected=("scanner-1", "sw-ot"), promoted=False)
+        Opened("sw-edge", at(90), at(70), "down", affected=("sw-server",), promoted=False)
     ]
+
+
+def test_a_root_cause_below_another_is_not_counted_as_its_collateral():
+    # fw-01 and sw-ot are both root causes: sw-edge, between them, still answers.
+    statuses = readings(at(20), down=("fw-01", "sw-ot", "scanner-1"))
+
+    assert [(change.root_device_id, change.affected) for change in diff([], statuses, at(20))] == [
+        ("fw-01", ()),  # not sw-ot (its own incident) and not scanner-1 (covered by that one)
+        ("sw-ot", ("scanner-1",)),
+    ]
+
+
+def test_a_device_with_its_own_incident_is_not_counted_when_its_parent_fails_later():
+    tracked = [open_incident(1, "scanner-1")]  # the scanner failed first
+    statuses = readings(at(60), down=("sw-ot", "scanner-1", "plc-conveyor-1"))
+
+    # The scanner keeps its incident; the switch's incident counts the PLC only.
+    assert [(change.root_device_id, change.affected) for change in diff(tracked, statuses, at(60))] == [
+        ("sw-ot", ("plc-conveyor-1",))
+    ]
+
+
+def test_the_affected_set_of_a_tracked_incident_also_leaves_out_devices_with_their_own_incident():
+    tracked = [open_incident(1, "sw-ot", ("plc-conveyor-1",)), open_incident(2, "scanner-1")]
+    statuses = readings(at(60), down=("sw-ot", "scanner-1", "plc-conveyor-1"))
+
+    # Nothing to report: the scanner is below sw-ot but belongs to incident 2.
+    assert diff(tracked, statuses, at(60)) == []
 
 
 def test_a_child_still_down_when_its_parent_recovers_is_promoted_to_its_own_incident():
@@ -286,6 +319,22 @@ async def test_one_incident_per_outage_however_long_it_lasts():
     assert incident.affected_device_ids == OT_CHILDREN
     assert incident.peak_affected_count == 5
     assert [event_type for event_type, _ in events(incident.id)] == ["opened"]
+
+
+@pytest_db
+async def test_alerts_suppressed_does_not_count_a_device_that_has_its_own_incident():
+    ping = FakePing(default=REPLY)
+
+    # The scanner fails first (its own incident at cycle 4); then the switch
+    # above it fails together with the PLC (confirmed at cycle 7).
+    await run_script(ping, 8, {2: lost("scanner-1"), 5: lost("sw-ot", "plc-conveyor-1")})
+
+    scanner_incident, switch_incident = incidents()
+    assert (scanner_incident.root_device_id, scanner_incident.state) == ("scanner-1", "open")
+    assert (switch_incident.root_device_id, switch_incident.state) == ("sw-ot", "open")
+    assert switch_incident.affected_device_ids == ["plc-conveyor-1"]  # not the scanner
+    # One alert was suppressed (the PLC); the scanner raised its own.
+    assert summarize_incidents(incidents()).alerts_suppressed == 1
 
 
 @pytest_db

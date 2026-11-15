@@ -14,6 +14,12 @@ of an outage further up, its incident stays as it is (it is still down). If
 its status is "unknown" (the probe itself fails), the incident stays open: not
 being able to measure is not a recovery.
 
+An incident's affected set holds its collateral devices: the unhealthy devices
+below the root that have no incident of their own. A device below it that does
+have one, and whatever that incident covers, is left out, so a device is never
+counted for an incident and again for the one above it. (Collateral that
+several root causes cut off together is still listed under each of them.)
+
 Because the incidents live in the database and the tracker keeps no other
 state, a backend restart needs no special code: the first cycle after it
 continues the incidents whose root is still unhealthy, resolves the ones that
@@ -92,10 +98,32 @@ def diff_incidents(
     root_causes = {
         incident.device.id: incident for incident in analysis if incident.category == "root_cause"
     }
-    tracked = {incident.root_device_id for incident in unresolved}
+    by_root = {incident.root_device_id: incident for incident in unresolved}
     collateral_until_now = {
         device_id for incident in unresolved for device_id in incident.affected_device_ids
     }
+
+    def covered_by(device_id: str) -> set[str]:
+        """What the incident rooted at ``device_id`` covers below it: every
+        unhealthy descendant of a root cause, or the stored affected set of an
+        incident whose root is collateral itself at the moment."""
+        if device_id in root_causes:
+            return {device.id for device in root_causes[device_id].downstream_affected}
+        return set(by_root[device_id].affected_device_ids)
+
+    def affected_by(root_id: str) -> set[str]:
+        """The devices that count as collateral of the root cause ``root_id``.
+
+        A device below it that has an incident of its own (it is a root cause
+        too, or the root of an unresolved incident) is left out, together with
+        everything that incident covers. So no device is counted for an
+        incident and again for the one above it, and none that has its own
+        incident counts as suppressed.
+        """
+        affected = covered_by(root_id)
+        for owner in affected & (root_causes.keys() | by_root.keys()):
+            affected -= {owner} | covered_by(owner)
+        return affected
 
     def seen_at(device_id: str) -> datetime:
         reading = readings.get(device_id)
@@ -111,7 +139,7 @@ def diff_incidents(
             changes.append(Resolved(incident.id, reading.timestamp, "recovered"))
         elif device_id in root_causes:
             before = set(incident.affected_device_ids)
-            now = {device.id for device in root_causes[device_id].downstream_affected}
+            now = affected_by(device_id)
             if now != before:
                 changes.append(
                     AffectedChanged(
@@ -126,7 +154,7 @@ def diff_incidents(
         # outage further up, or its status is unknown: leave the incident as is.
 
     for device_id, root_cause in root_causes.items():
-        if device_id in tracked:
+        if device_id in by_root:
             continue
         reading = readings.get(device_id)
         at = seen_at(device_id)
@@ -143,7 +171,7 @@ def diff_incidents(
                 at=at,
                 first_failure_at=first_failure_at,
                 status=root_cause.status,
-                affected=tuple(sorted(device.id for device in root_cause.downstream_affected)),
+                affected=tuple(sorted(affected_by(device_id))),
                 promoted=promoted,
             )
         )
