@@ -744,9 +744,13 @@ judged before a detector has seen 30 (the warm-up).
 
 - **EWMA freezes.** A reading above the threshold is not learned, so a spike
   cannot pull the baseline up and hide itself, and an anomaly lasts for as long
-  as the readings stay above the baseline of before it began. The price: a
-  change that is there to stay keeps being reported until the detectors are
-  reset, which happens whenever an anomaly setting is changed.
+  as the readings stay above the baseline of before it began.
+- **EWMA re-learns after an hour.** On its own, freezing would report a change
+  that is there to stay for ever. So after 360 readings in a row above the
+  threshold (an hour at the default poll interval) the detector accepts the
+  new level: it forgets its baseline and warms up again on the readings that
+  follow, and the anomaly ends. One reading within the threshold starts that
+  count again.
 - **The rolling window learns from everything.** A level that stays becomes
   normal after W readings on its own, but a spike widens the window's spread
   and can hide the next one.

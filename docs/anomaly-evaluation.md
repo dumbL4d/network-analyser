@@ -139,7 +139,7 @@ level. On packet loss it
 caught only 58% of the lossy periods: the first lossy polls raise the window's
 spread faster than three polls in a row can clear it. Its one advantage is
 the other side of the same coin: a change that is there to stay becomes
-normal after W readings without anyone resetting anything.
+normal after W readings (60 here), where the EWMA detector takes 360.
 
 **Packet loss, measured with 4 probes, is a coarse signal.** Loss moves in
 steps of 25%, so the detectors have little to work with, and the static
@@ -179,7 +179,8 @@ The script takes `--k`, `--m`, `--alpha` and `--window` (and `--seed`,
 - A baseline is given credit for a spread of at least 1 ms of latency and 5
   points of loss (the values the backend uses). On a device steadier than
   that, a change has to exceed 3 ms or 15 points to count.
-- An anomaly that never ends is not in the traces. The EWMA detector would
-  report it until it is reset (the backend resets every detector when the
-  anomaly settings are changed); the rolling detector would stop after W
-  readings.
+- An anomaly that never ends is not in the traces: the longest step lasts
+  240 readings. The EWMA detector reports a level that stays for 360 readings
+  in a row and then accepts it as the new normal (it forgets its baseline and
+  warms up again); the rolling detector stops after W readings. Neither rule
+  is exercised by these figures.

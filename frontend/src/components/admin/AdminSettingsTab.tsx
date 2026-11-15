@@ -439,7 +439,9 @@ export default function AdminSettingsTab() {
               chart markers, and never changes a status or opens an incident.
               Alpha only matters to the EWMA detector and the window only to
               the rolling one. Changing any of these starts every detector
-              afresh (30 readings of warm-up).
+              afresh (30 readings of warm-up). The EWMA detector also starts
+              afresh by itself once a level has stayed for 360 readings: by
+              then it is the new normal.
             </p>
             {success !== null && (
               <p className="text-sm text-green-600">{success}</p>

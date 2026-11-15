@@ -22,6 +22,7 @@ from app.services.anomaly import (
     Verdict,
     make_detector,
 )
+from app.services.anomaly.detectors import RELEARN_AFTER_SAMPLES
 from app.services.anomaly.registry import METRICS, AnomalyConfig, AnomalyEnd, AnomalyRegistry, AnomalyStart, anomaly_registry
 from app.services.persistence import ANOMALIES, SAMPLES, persist_cycle, recent_anomalies
 from app.services.retention import run_retention
@@ -308,12 +309,56 @@ def test_the_ewma_baseline_follows_a_slow_change():
     assert detector._baseline()[0] == pytest.approx(30.2, abs=0.2)
 
 
-def test_the_ewma_detector_keeps_reporting_a_level_that_is_there_to_stay():
+def test_the_ewma_detector_accepts_a_level_that_has_stayed_for_360_readings():
+    assert RELEARN_AFTER_SAMPLES == 360  # an hour, at one reading every 10 seconds
     detector = warmed_up(ewma())
+    frozen = detector._baseline()
 
-    result = flags(detector, [25.0] * 500)  # a new level, for good
+    # A new level, for good. For 359 readings it is an anomaly, measured
+    # against the baseline of before it began ...
+    assert flags(detector, [25.0] * 359) == [False, False] + [True] * 357
+    assert detector._baseline() == frozen
+    # ... and so is the 360th, after which the detector starts over.
+    assert detector.update(25.0).anomalous is True
 
-    assert all(result[2:])  # the price of freezing: it never becomes "normal"
+    verdicts = [detector.update(25.0) for _ in range(100)]
+
+    # Thirty readings of warm-up on the new level, and then it is normal.
+    assert [verdict.score for verdict in verdicts[:30]] == [None] * 30
+    assert [verdict.expected for verdict in verdicts[30:]] == [pytest.approx(25.0)] * 70
+    assert not any(verdict.anomalous for verdict in verdicts)
+    assert detector._baseline() == (pytest.approx(25.0), pytest.approx(0.0, abs=1e-9))
+
+
+def test_one_reading_within_the_threshold_starts_the_count_towards_acceptance_again():
+    detector = warmed_up(ewma())
+    flags(detector, [25.0] * 359)
+
+    detector.update(10.0)  # back to normal, for one reading
+    result = flags(detector, [25.0] * 359)
+
+    # 359 in a row, twice: never 360. Still an anomaly against the old baseline.
+    assert result == [False, False] + [True] * 357
+    assert detector._baseline()[0] == pytest.approx(10.0, abs=0.6)
+
+
+def test_after_accepting_a_level_a_further_rise_stands_out_again():
+    detector = warmed_up(ewma())
+    flags(detector, [25.0] * 360)  # accepted
+    flags(detector, [25.0] * 60)  # warmed up on it
+
+    assert flags(detector, [25.0, 60.0, 60.0, 60.0, 25.0]) == [False, False, False, True, False]
+
+
+def test_the_rolling_detector_never_starts_over():
+    detector = warmed_up(rolling(window=1000), noise(1000))
+
+    # Too little time for the window to fill with the new level; and unlike
+    # the EWMA detector it has no other way of accepting it.
+    result = flags(detector, [25.0] * 400)
+
+    assert detector.seen == 1400 and len(detector._values) == 1000
+    assert result[2] is True  # flagged where it began
 
 
 @pytest.mark.parametrize("alpha", [0, -0.1, 1.01])
@@ -574,6 +619,25 @@ def test_a_probe_that_failed_has_neither_latency_nor_loss_to_judge():
 
     assert readings[0].anomaly is None and (started, ended) == ([], [])
     assert registry.detector_keys() == set()  # nothing was ever measured
+
+
+def test_a_level_that_stays_for_360_readings_ends_the_anomaly_and_becomes_the_baseline():
+    registry = AnomalyRegistry()
+    feed(registry, quiet_cycles(30, "fw-01"))
+
+    outcomes = [registry.observe([reading("fw-01", 60.0, cycle=30 + n)], CONFIG) for n in range(361)]
+
+    # One anomaly: it began with the third reading and ended with the 361st,
+    # the first one after the detector had started over.
+    assert [n for n, (_, started, _) in enumerate(outcomes) if started] == [2]
+    assert [n for n, (_, _, ended) in enumerate(outcomes) if ended] == [360]
+    assert outcomes[359][0][0].anomaly is not None and outcomes[360][0][0].anomaly is None
+
+    # Once it has warmed up, 60 ms is what is normal, and a further rise stands out.
+    settled, _, _ = feed(registry, [[reading("fw-01", 60.0)]] * 40)
+    higher, started, _ = feed(registry, [[reading("fw-01", 150.0)]] * 3)
+    assert settled[0].anomaly is None
+    assert higher[0].anomaly["latency"].expected == pytest.approx(60.0) and len(started) == 1
 
 
 def test_a_deleted_device_loses_its_detectors_in_the_next_cycle():

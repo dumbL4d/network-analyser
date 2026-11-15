@@ -35,6 +35,11 @@ from dataclasses import dataclass
 # handful of readings is not a baseline.
 WARMUP_SAMPLES = 30
 
+# A detector that freezes its baseline accepts a level that has stayed above
+# it for this many readings in a row as the new normal: an hour, at one
+# reading every 10 seconds.
+RELEARN_AFTER_SAMPLES = 360
+
 
 @dataclass(frozen=True)
 class Verdict:
@@ -129,9 +134,14 @@ class EwmaDetector(Detector):
     FREEZE. A reading above the threshold is NOT learned: neither the mean
     nor the variance moves. So a spike cannot pull the baseline up and hide
     itself, and an anomaly lasts for as long as the readings stay above the
-    baseline of before it began. The price is that a change which is there to
-    stay keeps being reported: the baseline never accepts it. (The registry
-    starts every detector afresh when the anomaly settings are changed.)
+    baseline of before it began.
+
+    RE-LEARN. On its own, freezing would report a change that is there to
+    stay for ever. So once ``RELEARN_AFTER_SAMPLES`` readings in a row have
+    been above the threshold, the detector takes the new level for what it
+    is, the new normal: it forgets its baseline and warms up again on the
+    readings that follow. A single reading within the threshold starts that
+    count again.
     """
 
     freezes_on_anomaly = True
@@ -160,6 +170,14 @@ class EwmaDetector(Detector):
 
     def _baseline(self) -> tuple[float, float]:
         return self._mean, math.sqrt(self._variance)
+
+    def update(self, value: float) -> Verdict:
+        verdict = super().update(value)
+        if self._streak >= RELEARN_AFTER_SAMPLES:
+            # Start over. The first reading of the new warm-up replaces the
+            # old mean and variance (see the Welford step in ``_learn``).
+            self.seen = self._streak = self._learned = 0
+        return verdict
 
 
 class RollingZScoreDetector(Detector):
