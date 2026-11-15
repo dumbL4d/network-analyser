@@ -26,6 +26,11 @@ class LatencySample(SQLModel, table=True):
     latency_ms: float | None = None
     raw_status: str
     confirmed_status: str
+    # Share of this poll's probes without a reply, and how much the round-trip
+    # time varied between them. None in rows from before they were measured,
+    # and when the probe itself failed; jitter also unless two probes replied.
+    loss_pct: float | None = None
+    jitter_ms: float | None = None
 
 
 class LatencyRollup1m(SQLModel, table=True):
@@ -33,6 +38,11 @@ class LatencyRollup1m(SQLModel, table=True):
 
     ``min`` / ``avg`` / ``max`` cover the polls that got a reply and are None
     when none did. ``fail_count`` is the number of polls without a latency.
+
+    Packet loss and jitter are summarised the same way, as an average and a
+    maximum over the polls that measured them. ``loss_count`` and
+    ``jitter_count`` say how many polls that was: they are the weights that
+    let two rollups be merged without the average drifting.
     """
 
     __tablename__ = "latency_rollup_1m"
@@ -50,6 +60,12 @@ class LatencyRollup1m(SQLModel, table=True):
     max: float | None = None
     sample_count: int
     fail_count: int
+    loss_avg: float | None = None
+    loss_max: float | None = None
+    loss_count: int = 0
+    jitter_avg: float | None = None
+    jitter_max: float | None = None
+    jitter_count: int = 0
 
 
 class StatusTransition(SQLModel, table=True):

@@ -8,12 +8,20 @@ is the FIRST use of ``require_role("admin")`` in the codebase.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
+from app.core.config import settings
 from app.core.deps import Audit, get_current_user, require_role
 from app.db.session import get_session
 from app.models.settings import AppSettings
 from app.models.user import User
 from app.schemas.settings import SettingsOut, SettingsUpdate
 from app.services.debounce import MAX_THRESHOLD, MIN_THRESHOLD
+from app.services.ping_engine import (
+    MAX_PING_GAP_MS,
+    MAX_PINGS_PER_CYCLE,
+    MIN_PING_GAP_MS,
+    MIN_PINGS_PER_CYCLE,
+    probe_budget_problem,
+)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -88,6 +96,36 @@ def update_settings(
                 status_code=422,
                 detail=f"{field} must be between {MIN_THRESHOLD} and {MAX_THRESHOLD}",
             )
+
+    # Probing (see app.services.ping_engine): each value in its range ...
+    ranges = {
+        "pings_per_cycle": (MIN_PINGS_PER_CYCLE, MAX_PINGS_PER_CYCLE),
+        "ping_gap_ms": (MIN_PING_GAP_MS, MAX_PING_GAP_MS),
+    }
+    for field, (lowest, highest) in ranges.items():
+        if field in updates and not lowest <= updates[field] <= highest:
+            raise HTTPException(
+                status_code=422, detail=f"{field} must be between {lowest} and {highest}"
+            )
+    if "loss_warn_pct" in updates and not 0 < updates["loss_warn_pct"] <= 100:
+        raise HTTPException(
+            status_code=422, detail="loss_warn_pct must be above 0 and at most 100"
+        )
+    if "jitter_warn_ms" in updates and not updates["jitter_warn_ms"] > 0:
+        raise HTTPException(status_code=422, detail="jitter_warn_ms must be above 0")
+
+    # ... and together they have to fit the poll interval. Checked on the
+    # EFFECTIVE values (incoming over stored), whenever one of the three
+    # changes.
+    if updates.keys() & {"pings_per_cycle", "ping_gap_ms", "poll_interval_seconds"}:
+        problem = probe_budget_problem(
+            updates.get("pings_per_cycle", row.pings_per_cycle),
+            updates.get("ping_gap_ms", row.ping_gap_ms),
+            settings.PING_TIMEOUT_SECONDS,
+            updates.get("poll_interval_seconds", row.poll_interval_seconds),
+        )
+        if problem is not None:
+            raise HTTPException(status_code=422, detail=problem)
 
     changes = {
         field: {"from": getattr(row, field), "to": value}

@@ -23,6 +23,8 @@ from app.services.ping_engine import DeviceStatus
 class HistorySample(NamedTuple):
     latency_ms: float | None
     timestamp: datetime
+    loss_pct: float | None = None
+    jitter_ms: float | None = None
 
 
 class HistoryStore:
@@ -35,7 +37,12 @@ class HistoryStore:
             self._history.setdefault(
                 status.device_id, deque(maxlen=settings.HISTORY_MAX_SAMPLES)
             ).append(
-                HistorySample(latency_ms=status.latency_ms, timestamp=status.timestamp)
+                HistorySample(
+                    latency_ms=status.latency_ms,
+                    timestamp=status.timestamp,
+                    loss_pct=status.loss_pct,
+                    jitter_ms=status.jitter_ms,
+                )
             )
 
     def load(self, device_id: str, samples: Iterable[HistorySample]) -> None:

@@ -142,7 +142,17 @@ def test_upgrading_an_existing_database_keeps_its_data(empty_database, create_ex
     assert _rows("user") == upgraded_users
     # The settings row keeps every value it had and gains the new columns with
     # their defaults.
-    assert _rows("appsettings") == [{**settings_row, "failure_threshold": 3, "recovery_threshold": 2}]
+    assert _rows("appsettings") == [
+        {
+            **settings_row,
+            "failure_threshold": 3,
+            "recovery_threshold": 2,
+            "pings_per_cycle": 4,
+            "ping_gap_ms": 200,
+            "loss_warn_pct": 20.0,
+            "jitter_warn_ms": 30.0,
+        }
+    ]
 
     init_db()  # a second start changes nothing
     assert _revision() == HEAD
@@ -171,9 +181,12 @@ def test_history_tables_and_their_indexes_exist_after_upgrading(empty_database):
         indexes = {table: {(i["name"], tuple(i["column_names"])) for i in inspector.get_indexes(table)} for table in columns}
         uniques = [(u["name"], tuple(u["column_names"])) for u in inspector.get_unique_constraints("latency_rollup_1m")]
 
-    assert columns["latency_sample"] == ["id", "device_id", "ts", "latency_ms", "raw_status", "confirmed_status"]
+    assert columns["latency_sample"] == [
+        "id", "device_id", "ts", "latency_ms", "raw_status", "confirmed_status", "loss_pct", "jitter_ms",
+    ]
     assert columns["latency_rollup_1m"] == [
         "id", "device_id", "bucket_start", "min", "avg", "max", "sample_count", "fail_count",
+        "loss_avg", "loss_max", "loss_count", "jitter_avg", "jitter_max", "jitter_count",
     ]
     assert columns["status_transition"] == ["id", "device_id", "ts", "from_status", "to_status"]
     assert ("ix_latency_sample_device_id_ts", ("device_id", "ts")) in indexes["latency_sample"]

@@ -3,6 +3,8 @@ covered in test_poll_loop.py."""
 
 import pytest
 
+from app.core.config import settings
+
 DEFAULTS = {
     "id": 1,
     "site_name": "Warehouse Network Monitor",
@@ -12,6 +14,10 @@ DEFAULTS = {
     "flap_threshold": 3,
     "failure_threshold": 3,
     "recovery_threshold": 2,
+    "pings_per_cycle": 4,
+    "ping_gap_ms": 200,
+    "loss_warn_pct": 20.0,
+    "jitter_warn_ms": 30.0,
 }
 
 
@@ -117,9 +123,124 @@ def test_the_admin_settings_form_payload_is_accepted(client, admin_headers):
         "flap_threshold": 4,
         "failure_threshold": 5,
         "recovery_threshold": 1,
+        "pings_per_cycle": 6,
+        "ping_gap_ms": 250,
+        "loss_warn_pct": 10.0,
+        "jitter_warn_ms": 15.0,
     }
 
     response = _patch(client, admin_headers, **form)
 
     assert response.status_code == 200
     assert response.json() == {"id": 1, **form}
+
+
+# --- probing: pings per cycle, the gap, and the loss and jitter thresholds -------
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"pings_per_cycle": 1},
+        {"pings_per_cycle": 10},  # 10 x 0.2 s + 2 s = 4 s of the 8 s a 10 s interval allows
+        {"ping_gap_ms": 10},
+        {"ping_gap_ms": 5000, "pings_per_cycle": 1, "poll_interval_seconds": 60},
+        {"loss_warn_pct": 0.5},
+        {"loss_warn_pct": 100},
+        {"jitter_warn_ms": 0.1},
+        {"jitter_warn_ms": 2500},
+    ],
+)
+def test_probe_settings_accept_the_ends_of_their_ranges(client, admin_headers, fields):
+    response = _patch(client, admin_headers, **fields)
+
+    assert response.status_code == 200
+    assert response.json() == {**DEFAULTS, **fields}
+    assert _settings(client, admin_headers) == response.json()  # persisted
+
+
+@pytest.mark.parametrize(
+    ("fields", "detail"),
+    [
+        ({"pings_per_cycle": 0}, "pings_per_cycle must be between 1 and 10"),
+        ({"pings_per_cycle": 11}, "pings_per_cycle must be between 1 and 10"),
+        ({"pings_per_cycle": -1}, "pings_per_cycle must be between 1 and 10"),
+        ({"ping_gap_ms": 9}, "ping_gap_ms must be between 10 and 5000"),
+        ({"ping_gap_ms": 5001}, "ping_gap_ms must be between 10 and 5000"),
+        ({"ping_gap_ms": 0}, "ping_gap_ms must be between 10 and 5000"),
+        ({"loss_warn_pct": 0}, "loss_warn_pct must be above 0 and at most 100"),
+        ({"loss_warn_pct": -5}, "loss_warn_pct must be above 0 and at most 100"),
+        ({"loss_warn_pct": 100.1}, "loss_warn_pct must be above 0 and at most 100"),
+        ({"jitter_warn_ms": 0}, "jitter_warn_ms must be above 0"),
+        ({"jitter_warn_ms": -1}, "jitter_warn_ms must be above 0"),
+    ],
+)
+def test_probe_settings_out_of_range_are_rejected(client, admin_headers, fields, detail):
+    response = _patch(client, admin_headers, **fields)
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": detail}
+    assert _settings(client, admin_headers) == DEFAULTS  # nothing was saved
+
+
+@pytest.mark.parametrize("field", ["pings_per_cycle", "ping_gap_ms"])
+def test_pings_and_gap_must_be_whole_numbers(client, admin_headers, field):
+    assert _patch(client, admin_headers, **{field: 2.5}).status_code == 422
+    assert _patch(client, admin_headers, **{field: "four"}).status_code == 422
+
+
+def test_probes_that_do_not_fit_in_the_poll_interval_are_rejected_with_the_reason(client, admin_headers):
+    response = _patch(client, admin_headers, pings_per_cycle=10, ping_gap_ms=700)
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": (
+            "pings_per_cycle x ping_gap_ms + the ping timeout is 9 s (10 x 700 ms + 2 s), which does not "
+            "fit comfortably inside the poll interval of 10 s: at most 8 s (80% of it). Lower "
+            "pings_per_cycle or ping_gap_ms, or raise poll_interval_seconds."
+        )
+    }
+    assert _settings(client, admin_headers) == DEFAULTS  # nothing was saved
+
+
+def test_the_same_probes_are_accepted_with_a_longer_poll_interval(client, admin_headers):
+    response = _patch(client, admin_headers, pings_per_cycle=10, ping_gap_ms=700, poll_interval_seconds=15)
+
+    assert response.status_code == 200  # 9 s of the 12 s allowed
+
+
+def test_the_fit_is_checked_against_the_stored_values_of_the_fields_not_sent(client, admin_headers):
+    assert _patch(client, admin_headers, poll_interval_seconds=5).status_code == 200
+    # Stored now: 4 pings, 200 ms apart, every 5 s. Allowed: 4 s.
+    assert _patch(client, admin_headers, pings_per_cycle=10).status_code == 200  # exactly 4 s
+    assert _patch(client, admin_headers, ping_gap_ms=201).status_code == 422  # 4.01 s
+    assert _patch(client, admin_headers, pings_per_cycle=9, ping_gap_ms=201).status_code == 200
+
+    assert _settings(client, admin_headers)["ping_gap_ms"] == 201
+
+
+def test_shortening_the_poll_interval_is_rejected_when_the_probes_no_longer_fit(client, admin_headers):
+    assert _patch(client, admin_headers, pings_per_cycle=10, ping_gap_ms=700, poll_interval_seconds=15).status_code == 200
+
+    response = _patch(client, admin_headers, poll_interval_seconds=10)
+
+    assert response.status_code == 422
+    assert response.json()["detail"].startswith("pings_per_cycle x ping_gap_ms + the ping timeout is 9 s")
+    assert _settings(client, admin_headers)["poll_interval_seconds"] == 15.0
+
+
+def test_the_ping_timeout_counts_towards_the_fit(client, admin_headers, monkeypatch):
+    monkeypatch.setattr(settings, "PING_TIMEOUT_SECONDS", 8.0)  # 4 x 0.2 s + 8 s = 8.8 s of 8 s
+
+    response = _patch(client, admin_headers, pings_per_cycle=4)
+
+    assert response.status_code == 422
+    assert "(4 x 200 ms + 8 s)" in response.json()["detail"]
+    # A change that has nothing to do with probing is not held up by it.
+    assert _patch(client, admin_headers, site_name="Plant 2", loss_warn_pct=10).status_code == 200
+
+
+def test_an_out_of_range_value_is_reported_before_the_fit(client, admin_headers):
+    response = _patch(client, admin_headers, pings_per_cycle=50, ping_gap_ms=5000)
+
+    assert response.json() == {"detail": "pings_per_cycle must be between 1 and 10"}

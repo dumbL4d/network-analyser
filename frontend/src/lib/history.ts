@@ -35,6 +35,10 @@ function fromSamples(samples: HistorySampleOut[]): HistoryPoint[] {
     max_ms: sample.latency_ms,
     sample_count: 1,
     fail_count: sample.latency_ms === null ? 1 : 0,
+    loss_pct: sample.loss_pct,
+    loss_max_pct: sample.loss_pct,
+    jitter_ms: sample.jitter_ms,
+    jitter_max_ms: sample.jitter_ms,
   }))
 }
 
@@ -56,29 +60,77 @@ export async function loadHistory(
   return { points: data.points, resolution: data.resolution }
 }
 
+/** What a history chart can show. */
+export type HistoryMetric = 'latency' | 'loss' | 'jitter'
+
+interface MetricSpec {
+  label: string
+  unit: string
+  /** The line: the reading, or the bucket's average. */
+  value: (point: HistoryPoint) => number | null
+  /** The shaded band of a bucket, from `low` to `high`. */
+  low: (point: HistoryPoint) => number | null
+  high: (point: HistoryPoint) => number | null
+  /** What the band means, for the tooltip. */
+  bandLabel: string
+}
+
+export const METRICS: Record<HistoryMetric, MetricSpec> = {
+  latency: {
+    label: 'Latency',
+    unit: 'ms',
+    value: (point) => point.latency_ms,
+    low: (point) => point.min_ms,
+    high: (point) => point.max_ms,
+    bandLabel: 'min – max',
+  },
+  loss: {
+    label: 'Packet loss',
+    unit: '%',
+    value: (point) => point.loss_pct,
+    low: (point) => point.loss_pct,
+    high: (point) => point.loss_max_pct,
+    bandLabel: 'average – peak',
+  },
+  jitter: {
+    label: 'Jitter',
+    unit: 'ms',
+    value: (point) => point.jitter_ms,
+    low: (point) => point.jitter_ms,
+    high: (point) => point.jitter_max_ms,
+    bandLabel: 'average – peak',
+  },
+}
+
 export interface ChartDatum {
   index: number
   timestamp: string
-  latency_ms: number | null
-  /** [min, max] for the shaded band; null when nothing replied. */
+  /** The metric's reading (or bucket average); null when there is none. */
+  value: number | null
+  /** [low, high] for the shaded band; null when there is nothing to show. */
   band: [number, number] | null
   sample_count: number
   fail_count: number
 }
 
-/** Shape history points for Recharts (line = latency_ms, band = min..max). */
-export function toChartData(points: HistoryPoint[]): ChartDatum[] {
-  return points.map((point, index) => ({
-    index,
-    timestamp: point.timestamp,
-    latency_ms: point.latency_ms,
-    band:
-      point.min_ms === null || point.max_ms === null
-        ? null
-        : [point.min_ms, point.max_ms],
-    sample_count: point.sample_count,
-    fail_count: point.fail_count,
-  }))
+/** Shape history points for Recharts (line = value, band = low..high). */
+export function toChartData(
+  points: HistoryPoint[],
+  metric: HistoryMetric = 'latency',
+): ChartDatum[] {
+  const spec = METRICS[metric]
+  return points.map((point, index) => {
+    const low = spec.low(point)
+    const high = spec.high(point)
+    return {
+      index,
+      timestamp: point.timestamp,
+      value: spec.value(point),
+      band: low === null || high === null ? null : [low, high],
+      sample_count: point.sample_count,
+      fail_count: point.fail_count,
+    }
+  })
 }
 
 /** Axis label: time of day for the short ranges, the date for the long ones. */
@@ -95,8 +147,11 @@ export function formatTick(timestamp: string, range: HistoryRange): string {
 }
 
 /** Human wording for the resolution the backend reported. */
-export function describeResolution(resolution: string): string {
+export function describeResolution(
+  resolution: string,
+  metric: HistoryMetric = 'latency',
+): string {
   return resolution === 'raw'
     ? 'every poll'
-    : `${resolution} buckets (average, shaded min–max)`
+    : `${resolution} buckets (average, shaded ${METRICS[metric].bandLabel.replace(/ /g, '')})`
 }

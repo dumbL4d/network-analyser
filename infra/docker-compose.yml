@@ -161,6 +161,10 @@ services:
       DEMO_MODE: ${DEMO_MODE:-false}
       # How long a login lasts, in minutes.
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      # How long one ping waits for its reply, in seconds. A device that does
+      # not answer costs this once per ping of a cycle (see "Probing" in
+      # ../README.md).
+      PING_TIMEOUT_SECONDS: ${PING_TIMEOUT_SECONDS:-2.0}
       # Data retention (see "Data persistence and retention" in ../README.md).
       # The defaults are the same as in backend/app/core/config.py; override
       # them in infra/.env.

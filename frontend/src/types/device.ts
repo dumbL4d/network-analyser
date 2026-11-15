@@ -24,6 +24,19 @@ export interface DeviceStatusDTO {
   consecutive_failures: number
   /** Polls in a row whose raw result was healthy. */
   consecutive_successes: number
+  /**
+   * The probes of the latest poll cycle. `latency_ms` above is their average
+   * round-trip time; these are the fastest and the slowest reply.
+   */
+  latency_min_ms: number | null
+  latency_max_ms: number | null
+  /** Share of those probes without a reply, 0-100. Null if not measured. */
+  loss_pct: number | null
+  /**
+   * Jitter: the mean change between consecutive round-trip times, in ms.
+   * Null unless at least two probes were answered.
+   */
+  jitter_ms: number | null
 }
 
 export interface DeviceOut {
@@ -63,6 +76,9 @@ export interface DeviceUpdate {
 export interface HistorySampleOut {
   latency_ms: number | null
   timestamp: string
+  /** Packet loss (percent) and jitter (ms) of that poll; null if not measured. */
+  loss_pct: number | null
+  jitter_ms: number | null
 }
 
 /** Time ranges GET /api/history/{id}?window=... accepts. */
@@ -83,6 +99,12 @@ export interface HistoryPoint {
   sample_count: number
   /** How many of those polls got no reply. */
   fail_count: number
+  /** Packet loss in percent: the reading, or the bucket's average and peak. */
+  loss_pct: number | null
+  loss_max_pct: number | null
+  /** Jitter in ms: the reading, or the bucket's average and peak. */
+  jitter_ms: number | null
+  jitter_max_ms: number | null
 }
 
 /** GET /api/history/{id}?window=... response. */

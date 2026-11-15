@@ -161,6 +161,37 @@ def test_a_backlog_is_rolled_up_in_batches_with_the_same_result(monkeypatch):
     assert stored(SAMPLES, "ts") == []
 
 
+def test_loss_and_jitter_survive_merging_into_a_minute_already_rolled_up(monkeypatch):
+    # Eleven polls of one minute, rolled up three at a time: the minute's row
+    # is written by the first batch and merged into by the others.
+    polls = [
+        (OLD_MINUTE + seconds(5 * n), 10.0 + n, [0.0, 25.0, 50.0][n % 3], None if n % 4 == 0 else float(n))
+        for n in range(11)
+    ]
+    readings = [
+        make_status("fw-01", "healthy", latency_ms, ts).model_copy(update={"loss_pct": loss, "jitter_ms": jitter})
+        for ts, latency_ms, loss, jitter in polls
+    ]
+    persist_cycle(readings, [])
+    monkeypatch.setattr(retention, "ROLLUP_BATCH_SIZE", 3)
+    monkeypatch.setattr(retention, "ROLLUP_BATCH_PAUSE_SECONDS", 0)
+
+    report = run_retention(NOW)
+
+    losses = [loss for _, _, loss, _ in polls]
+    jitters = [jitter for _, _, _, jitter in polls if jitter is not None]
+    columns = ("sample_count", "loss_avg", "loss_max", "loss_count", "jitter_avg", "jitter_max", "jitter_count")
+    assert stored(ROLLUPS, *columns) == [
+        (
+            11,
+            pytest.approx(sum(losses) / 11), 50.0, 11,
+            pytest.approx(sum(jitters) / len(jitters)), 10.0, len(jitters),
+        )
+    ]
+    assert len(jitters) == 8  # the polls with n = 0, 4 and 8 had none
+    assert report.samples_rolled_up == 11
+
+
 # --- deletion ------------------------------------------------------------------
 
 

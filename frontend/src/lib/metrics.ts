@@ -19,6 +19,19 @@ export function computeMedianLatency(
   return (values[middle - 1] + values[middle]) / 2
 }
 
+/** Mean of the values that are there, or `null` when none is. */
+export function computeMean(values: (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null)
+  if (present.length === 0) return null
+  return present.reduce((sum, value) => sum + value, 0) / present.length
+}
+
+/** The highest of the values that are there, or `null` when none is. */
+export function computePeak(values: (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null)
+  return present.length === 0 ? null : Math.max(...present)
+}
+
 /**
  * Reachability as a percentage (0-100): the share of polls that got a reply.
  * A bucketed point stands for several polls, so the counts are used; a raw

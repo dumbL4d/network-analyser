@@ -40,9 +40,11 @@ async def test_one_cycle_pings_every_device_and_feeds_the_three_stores():
 
     assert intervals == [10.0]  # seeded poll interval
     assert sorted(address for address, _ in ping.calls) == sorted(d.ip for d in seed_devices())
-    # One probe per device, with the timeout and mode from the static settings.
+    # One call per device: the seeded 4 probes, 200 ms apart, with the timeout
+    # and mode from the static settings.
     assert all(
-        kwargs == {"count": 1, "timeout": 2.0, "privileged": True} for _, kwargs in ping.calls
+        kwargs == {"count": 4, "interval": 0.2, "timeout": 2.0, "privileged": True}
+        for _, kwargs in ping.calls
     )
 
     statuses = current_statuses()
@@ -127,6 +129,7 @@ async def test_the_api_reports_confirmed_status_and_raw_details(client, admin_he
     assert set(pending) == {
         "status", "latency_ms", "timestamp",  # the original keys
         "raw_status", "consecutive_failures", "consecutive_successes",  # added
+        "latency_min_ms", "latency_max_ms", "loss_pct", "jitter_ms",  # added with multi-ping
     }
     assert (pending["status"], pending["raw_status"], pending["consecutive_failures"]) == ("healthy", "down", 1)
     assert pending["latency_ms"] is None  # the latest reading got no reply

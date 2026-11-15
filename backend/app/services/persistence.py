@@ -45,6 +45,41 @@ WINDOWS: dict[str, tuple[timedelta, int | None]] = {
 RESOLUTION_LABELS = {MINUTE: "1m", 5 * MINUTE: "5m", 30 * MINUTE: "30m", 120 * MINUTE: "2h"}
 
 
+def rollup_bucket(row) -> Bucket:
+    """A ``latency_rollup_1m`` row as a ``Bucket``."""
+    return Bucket(
+        start=row.bucket_start,
+        min_ms=row.min,
+        avg_ms=row.avg,
+        max_ms=row.max,
+        sample_count=row.sample_count,
+        fail_count=row.fail_count,
+        loss_avg=row.loss_avg,
+        loss_max=row.loss_max,
+        loss_count=row.loss_count,
+        jitter_avg=row.jitter_avg,
+        jitter_max=row.jitter_max,
+        jitter_count=row.jitter_count,
+    )
+
+
+def rollup_values(bucket: Bucket) -> dict:
+    """The ``latency_rollup_1m`` columns a ``Bucket`` is stored in."""
+    return {
+        "min": bucket.min_ms,
+        "avg": bucket.avg_ms,
+        "max": bucket.max_ms,
+        "sample_count": bucket.sample_count,
+        "fail_count": bucket.fail_count,
+        "loss_avg": bucket.loss_avg,
+        "loss_max": bucket.loss_max,
+        "loss_count": bucket.loss_count,
+        "jitter_avg": bucket.jitter_avg,
+        "jitter_max": bucket.jitter_max,
+        "jitter_count": bucket.jitter_count,
+    }
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -62,6 +97,8 @@ def persist_cycle(readings: list[DeviceStatus], transitions: list[Transition]) -
             "latency_ms": reading.latency_ms,
             "raw_status": reading.raw_status or reading.status,
             "confirmed_status": reading.status,
+            "loss_pct": reading.loss_pct,
+            "jitter_ms": reading.jitter_ms,
         }
         for reading in readings
     ]
@@ -114,7 +151,14 @@ def warm_caches(now: datetime | None = None) -> None:
         for device_id in connection.execute(select(Device.__table__.c.id)).scalars().all():
             # Newest first, so the (device_id, ts) index makes this a short scan.
             newest_first = connection.execute(
-                select(SAMPLES.c.ts, SAMPLES.c.latency_ms, SAMPLES.c.raw_status, SAMPLES.c.confirmed_status)
+                select(
+                    SAMPLES.c.ts,
+                    SAMPLES.c.latency_ms,
+                    SAMPLES.c.raw_status,
+                    SAMPLES.c.confirmed_status,
+                    SAMPLES.c.loss_pct,
+                    SAMPLES.c.jitter_ms,
+                )
                 .where(SAMPLES.c.device_id == device_id)
                 .order_by(SAMPLES.c.ts.desc())
                 .limit(keep)
@@ -123,7 +167,8 @@ def warm_caches(now: datetime | None = None) -> None:
                 continue
             rows = newest_first[::-1]
             history_store.load(
-                device_id, [HistorySample(latency_ms=row.latency_ms, timestamp=row.ts) for row in rows]
+                device_id,
+                [HistorySample(row.latency_ms, row.ts, row.loss_pct, row.jitter_ms) for row in rows],
             )
             last_status[device_id] = rows[-1].confirmed_status
             if now - rows[-1].ts <= fresh_for:
@@ -153,7 +198,8 @@ def warm_caches(now: datetime | None = None) -> None:
 
 
 def history_window(device_id: str, window: str, now: datetime | None = None) -> HistoryWindowOut:
-    """Latency history of one device over ``window`` (a key of ``WINDOWS``).
+    """Latency, packet loss and jitter history of one device over ``window``
+    (a key of ``WINDOWS``).
 
     The resolution is chosen by the window. "1h" returns the raw samples. The
     longer windows return time buckets (min / avg / max), built from the
@@ -167,7 +213,7 @@ def history_window(device_id: str, window: str, now: datetime | None = None) -> 
 
     with engine.connect() as connection:
         samples = connection.execute(
-            select(SAMPLES.c.ts, SAMPLES.c.latency_ms)
+            select(SAMPLES.c.ts, SAMPLES.c.latency_ms, SAMPLES.c.loss_pct, SAMPLES.c.jitter_ms)
             .where(SAMPLES.c.device_id == device_id, SAMPLES.c.ts >= since)
             .order_by(SAMPLES.c.ts)
         ).all()
@@ -190,15 +236,19 @@ def history_window(device_id: str, window: str, now: datetime | None = None) -> 
                 max_ms=latency_ms,
                 sample_count=1,
                 fail_count=int(latency_ms is None),
+                loss_pct=loss,
+                loss_max_pct=loss,
+                jitter_ms=jitter,
+                jitter_max_ms=jitter,
             )
-            for ts, latency_ms in samples
+            for ts, latency_ms, loss, jitter in samples
         ]
     else:
-        buckets = [
-            Bucket(row.bucket_start, row.min, row.avg, row.max, row.sample_count, row.fail_count)
-            for row in rollups
+        buckets = [rollup_bucket(row) for row in rollups]
+        buckets += [
+            sample_bucket(ts, latency_ms, loss_pct=loss, jitter_ms=jitter)
+            for ts, latency_ms, loss, jitter in samples
         ]
-        buckets += [sample_bucket(ts, latency_ms) for ts, latency_ms in samples]
         points = [
             HistoryPointOut(
                 timestamp=bucket.start,
@@ -207,6 +257,10 @@ def history_window(device_id: str, window: str, now: datetime | None = None) -> 
                 max_ms=bucket.max_ms,
                 sample_count=bucket.sample_count,
                 fail_count=bucket.fail_count,
+                loss_pct=bucket.loss_avg,
+                loss_max_pct=bucket.loss_max,
+                jitter_ms=bucket.jitter_avg,
+                jitter_max_ms=bucket.jitter_max,
             )
             for bucket in rebucket(buckets, bucket_seconds)
         ]

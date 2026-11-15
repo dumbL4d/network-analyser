@@ -15,6 +15,10 @@ interface SettingsFormState {
   flap_threshold: string
   failure_threshold: string
   recovery_threshold: string
+  pings_per_cycle: string
+  ping_gap_ms: string
+  loss_warn_pct: string
+  jitter_warn_ms: string
 }
 
 /**
@@ -46,6 +50,10 @@ export default function AdminSettingsTab() {
           flap_threshold: String(settings.flap_threshold),
           failure_threshold: String(settings.failure_threshold),
           recovery_threshold: String(settings.recovery_threshold),
+          pings_per_cycle: String(settings.pings_per_cycle),
+          ping_gap_ms: String(settings.ping_gap_ms),
+          loss_warn_pct: String(settings.loss_warn_pct),
+          jitter_warn_ms: String(settings.jitter_warn_ms),
         })
       })
       .catch((err: unknown) => {
@@ -73,6 +81,10 @@ export default function AdminSettingsTab() {
         flap_threshold: Number(form.flap_threshold),
         failure_threshold: Number(form.failure_threshold),
         recovery_threshold: Number(form.recovery_threshold),
+        pings_per_cycle: Number(form.pings_per_cycle),
+        ping_gap_ms: Number(form.ping_gap_ms),
+        loss_warn_pct: Number(form.loss_warn_pct),
+        jitter_warn_ms: Number(form.jitter_warn_ms),
       })
       setSuccess('Settings updated')
       window.setTimeout(() => setSuccess(null), 4000)
@@ -107,7 +119,8 @@ export default function AdminSettingsTab() {
         </CardHeader>
         <CardContent>
           {/* noValidate: the backend is the source of truth for value sanity
-              (min-5 poll interval, warn < crit). Native browser validation
+              (min-5 poll interval, warn < crit, probes that fit in the poll
+              interval). Native browser validation
               would swallow those rejections before the inline message can
               display. */}
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
@@ -219,6 +232,75 @@ export default function AdminSettingsTab() {
               Debouncing: a device's status gets worse only after this many bad
               polls in a row, and better only after this many good polls in a
               row. Set both to 1 to switch debouncing off.
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="set-pings">Pings per cycle (1–10)</Label>
+                <Input
+                  id="set-pings"
+                  type="number"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={form.pings_per_cycle}
+                  onChange={(e) =>
+                    setForm({ ...form, pings_per_cycle: e.target.value })
+                  }
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="set-gap">Gap between pings (ms)</Label>
+                <Input
+                  id="set-gap"
+                  type="number"
+                  min={10}
+                  max={5000}
+                  step={10}
+                  value={form.ping_gap_ms}
+                  onChange={(e) =>
+                    setForm({ ...form, ping_gap_ms: e.target.value })
+                  }
+                  required
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="set-loss">Packet loss warn (%)</Label>
+                <Input
+                  id="set-loss"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={form.loss_warn_pct}
+                  onChange={(e) =>
+                    setForm({ ...form, loss_warn_pct: e.target.value })
+                  }
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="set-jitter">Jitter warn (ms)</Label>
+                <Input
+                  id="set-jitter"
+                  type="number"
+                  min={0}
+                  value={form.jitter_warn_ms}
+                  onChange={(e) =>
+                    setForm({ ...form, jitter_warn_ms: e.target.value })
+                  }
+                  required
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Probing: every cycle each device gets this many pings, this far
+              apart. From them come its packet loss and its jitter, and a
+              device at or above either threshold counts as degraded. The pings
+              have to fit in the poll interval: pings × gap + the ping timeout
+              may take up at most 80% of it. With 1 ping per cycle a device is
+              judged on reachability and latency alone, as before.
             </p>
             {success !== null && (
               <p className="text-sm text-green-600">{success}</p>

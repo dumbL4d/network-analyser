@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from icmplib import Host
 from sqlalchemy import Table, inspect, select
 from sqlmodel import Session
 
@@ -119,24 +120,43 @@ def ip_of(device_id: str) -> str:
 class FakePing:
     """Drop-in for ``icmplib.async_ping`` that never sends a packet.
 
-    ``outcomes`` maps an IP address to what the probe does for it: either
-    ``(is_alive, avg_rtt)`` or an exception to raise. Addresses that are not
-    listed get ``default``. Every call is recorded in ``calls`` as
-    ``(address, keyword_arguments)``.
+    ``outcomes`` maps an IP address to what the probes of one call do:
+
+    * ``(is_alive, avg_rtt)``: every probe is answered in ``avg_rtt`` ms, or
+      (``is_alive`` False) none is;
+    * a list with one entry per probe: its round-trip time in ms, or None for
+      a probe that got no reply, e.g. ``[10.0, None, 12.0, 30.0]``;
+    * an exception to raise.
+
+    Addresses that are not listed get ``default``. Every call is recorded in
+    ``calls`` as ``(address, keyword_arguments)``.
     """
 
-    def __init__(self, default: tuple[bool, float | None] = (True, 1.0)) -> None:
+    Outcome = tuple[bool, float | None] | list[float | None] | Exception
+
+    def __init__(self, default: "FakePing.Outcome" = (True, 1.0)) -> None:
         self.default = default
-        self.outcomes: dict[str, tuple[bool, float | None] | Exception] = {}
+        self.outcomes: dict[str, FakePing.Outcome] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def __call__(self, address: str, **kwargs: Any) -> SimpleNamespace:
+    async def __call__(self, address: str, **kwargs: Any) -> Any:
         self.calls.append((address, kwargs))
         outcome = self.outcomes.get(address, self.default)
         if isinstance(outcome, Exception):
             raise outcome
+        if isinstance(outcome, list):
+            # The real thing: what icmplib returns for these replies.
+            return Host(address, len(outcome), [rtt for rtt in outcome if rtt is not None])
         is_alive, avg_rtt = outcome
-        return SimpleNamespace(is_alive=is_alive, avg_rtt=avg_rtt)
+        count = kwargs.get("count", 1)
+        return SimpleNamespace(
+            is_alive=is_alive,
+            avg_rtt=avg_rtt,
+            min_rtt=avg_rtt,
+            max_rtt=avg_rtt,
+            rtts=[avg_rtt] * count if is_alive and avg_rtt is not None else [],
+            packets_sent=count,
+        )
 
 
 class StopLoop(BaseException):

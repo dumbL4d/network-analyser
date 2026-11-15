@@ -26,7 +26,7 @@ from sqlalchemy import delete, insert, select, update
 from app.core.config import settings
 from app.db.session import engine
 from app.services.flap_store import flap_store
-from app.services.persistence import ROLLUPS, SAMPLES, TRANSITIONS
+from app.services.persistence import ROLLUPS, SAMPLES, TRANSITIONS, rollup_bucket, rollup_values
 from app.services.rollup import MINUTE, Bucket, bucket_start, merge, sample_bucket
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,14 @@ def _roll_up_samples_before(cutoff: datetime) -> tuple[int, int]:
             # upgrade to a writer while the poll loop is saving a cycle.
             connection.exec_driver_sql("BEGIN IMMEDIATE")
             rows = connection.execute(
-                select(SAMPLES.c.id, SAMPLES.c.device_id, SAMPLES.c.ts, SAMPLES.c.latency_ms)
+                select(
+                    SAMPLES.c.id,
+                    SAMPLES.c.device_id,
+                    SAMPLES.c.ts,
+                    SAMPLES.c.latency_ms,
+                    SAMPLES.c.loss_pct,
+                    SAMPLES.c.jitter_ms,
+                )
                 .where(SAMPLES.c.ts < cutoff)
                 .order_by(SAMPLES.c.id)
                 .limit(ROLLUP_BATCH_SIZE)
@@ -69,8 +76,8 @@ def _roll_up_samples_before(cutoff: datetime) -> tuple[int, int]:
                 return rolled_up, written
 
             fresh: dict[tuple[str, datetime], Bucket] = {}
-            for _, device_id, ts, latency_ms in rows:
-                bucket = sample_bucket(ts, latency_ms, MINUTE)
+            for _, device_id, ts, latency_ms, loss, jitter in rows:
+                bucket = sample_bucket(ts, latency_ms, MINUTE, loss, jitter)
                 key = (device_id, bucket.start)
                 fresh[key] = merge(fresh[key], bucket) if key in fresh else bucket
 
@@ -85,18 +92,9 @@ def _roll_up_samples_before(cutoff: datetime) -> tuple[int, int]:
                 addition = fresh.pop((row.device_id, row.bucket_start), None)
                 if addition is None:
                     continue
-                stored = Bucket(row.bucket_start, row.min, row.avg, row.max, row.sample_count, row.fail_count)
-                merged = merge(stored, addition)
+                merged = merge(rollup_bucket(row), addition)
                 connection.execute(
-                    update(ROLLUPS)
-                    .where(ROLLUPS.c.id == row.id)
-                    .values(
-                        min=merged.min_ms,
-                        avg=merged.avg_ms,
-                        max=merged.max_ms,
-                        sample_count=merged.sample_count,
-                        fail_count=merged.fail_count,
-                    )
+                    update(ROLLUPS).where(ROLLUPS.c.id == row.id).values(**rollup_values(merged))
                 )
                 written += 1
 
@@ -104,15 +102,7 @@ def _roll_up_samples_before(cutoff: datetime) -> tuple[int, int]:
                 connection.execute(
                     insert(ROLLUPS),
                     [
-                        {
-                            "device_id": device_id,
-                            "bucket_start": bucket.start,
-                            "min": bucket.min_ms,
-                            "avg": bucket.avg_ms,
-                            "max": bucket.max_ms,
-                            "sample_count": bucket.sample_count,
-                            "fail_count": bucket.fail_count,
-                        }
+                        {"device_id": device_id, "bucket_start": bucket.start, **rollup_values(bucket)}
                         for (device_id, _), bucket in fresh.items()
                     ],
                 )

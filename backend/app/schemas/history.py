@@ -12,6 +12,9 @@ class HistorySampleOut(BaseModel):
 
     latency_ms: float | None
     timestamp: datetime
+    # Packet loss (percent) and jitter (ms) of that poll; None if not measured.
+    loss_pct: float | None = None
+    jitter_ms: float | None = None
 
 
 class HistoryPointOut(BaseModel):
@@ -21,6 +24,11 @@ class HistoryPointOut(BaseModel):
     equal it and ``sample_count`` is 1. For a bucket ``latency_ms`` is the
     average over the polls that got a reply (None if none did) and
     ``fail_count`` says how many polls did not.
+
+    Packet loss and jitter follow the same idea: ``loss_pct`` and
+    ``jitter_ms`` are the reading, or the bucket's average, and the ``_max``
+    fields the highest value in the bucket. None where nothing measured them
+    (history from before they were recorded, for instance).
     """
 
     timestamp: datetime
@@ -29,6 +37,10 @@ class HistoryPointOut(BaseModel):
     max_ms: float | None
     sample_count: int
     fail_count: int
+    loss_pct: float | None = None
+    loss_max_pct: float | None = None
+    jitter_ms: float | None = None
+    jitter_max_ms: float | None = None
 
 
 class HistoryWindowOut(BaseModel):

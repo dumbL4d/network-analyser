@@ -31,3 +31,11 @@ class AppSettings(SQLModel, table=True):
     # defaults mirror DEFAULT_FAILURE_THRESHOLD / DEFAULT_RECOVERY_THRESHOLD.
     failure_threshold: int = Field(default=3)
     recovery_threshold: int = Field(default=2)
+    # Probing (app.services.ping_engine): how many echo requests a device gets
+    # per poll cycle and how far apart, and from how much packet loss or
+    # jitter it counts as degraded. The defaults mirror DEFAULT_PINGS_PER_CYCLE
+    # and friends there.
+    pings_per_cycle: int = Field(default=4)
+    ping_gap_ms: int = Field(default=200)
+    loss_warn_pct: float = Field(default=20.0)
+    jitter_warn_ms: float = Field(default=30.0)

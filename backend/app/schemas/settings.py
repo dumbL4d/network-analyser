@@ -14,6 +14,10 @@ class SettingsOut(BaseModel):
     flap_threshold: int
     failure_threshold: int
     recovery_threshold: int
+    pings_per_cycle: int
+    ping_gap_ms: int
+    loss_warn_pct: float
+    jitter_warn_ms: float
 
 
 class SettingsUpdate(BaseModel):
@@ -30,3 +34,7 @@ class SettingsUpdate(BaseModel):
     flap_threshold: int | None = None
     failure_threshold: int | None = None
     recovery_threshold: int | None = None
+    pings_per_cycle: int | None = None
+    ping_gap_ms: int | None = None
+    loss_warn_pct: float | None = None
+    jitter_warn_ms: float | None = None

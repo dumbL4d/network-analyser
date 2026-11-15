@@ -1,10 +1,9 @@
 """Ping engine: status classification and the injectable probe."""
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
-from icmplib import NameLookupError, SocketPermissionError
+from icmplib import Host, NameLookupError, SocketPermissionError
 
 from app.services.ping_engine import classify_status, ping_all, ping_one
 from tests.helpers import FakePing
@@ -161,7 +160,7 @@ async def test_ping_all_runs_concurrently_and_keeps_input_order():
         finished.append(address)
         if address == "10.0.0.3":
             release.set()
-        return SimpleNamespace(is_alive=True, avg_rtt=1.0)
+        return Host(address, 1, [1.0])
 
     devices = [("a", "10.0.0.1"), ("b", "10.0.0.2"), ("c", "10.0.0.3")]
     results = await asyncio.wait_for(

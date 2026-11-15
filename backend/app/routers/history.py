@@ -35,7 +35,4 @@ def get_device_history(
         return history_window(device_id, window)
 
     samples = history_store.get_history(device_id)
-    return [
-        HistorySampleOut(latency_ms=sample.latency_ms, timestamp=sample.timestamp)
-        for sample in samples
-    ]
+    return [HistorySampleOut.model_validate(sample._asdict()) for sample in samples]

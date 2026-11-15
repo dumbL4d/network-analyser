@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -13,14 +14,19 @@ import {
 
 import TimeRangeSelect from '@/components/TimeRangeSelect'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useDeviceHistory } from '@/hooks/useDeviceHistory'
 import { useDevices } from '@/hooks/useDevices'
+import { usePolled } from '@/hooks/usePolled'
 import { useStatusStream } from '@/hooks/useStatusStream'
+import { fetchSettings } from '@/lib/api'
 import {
+  METRICS,
   describeResolution,
   formatTick,
   toChartData,
   type ChartDatum,
+  type HistoryMetric,
 } from '@/lib/history'
 import { getStatusColor } from '@/lib/statusStyles'
 import { cn } from '@/lib/utils'
@@ -51,23 +57,34 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function formatLatency(latencyMs: number | null | undefined): string {
-  return latencyMs === null || latencyMs === undefined
+/** A reading with its unit, or a dash when there is none. */
+function formatReading(
+  value: number | null | undefined,
+  unit: string,
+  digits = 2,
+): string {
+  return value === null || value === undefined
     ? '—'
-    : `${latencyMs.toFixed(2)} ms`
+    : `${value.toFixed(digits)} ${unit}`
 }
 
 function HistoryChart({
   history,
   range,
   bucketed,
+  metric,
+  threshold,
 }: {
   history: HistoryPoint[]
   range: HistoryRange
   /** True when each point is a time bucket (min / avg / max), not one poll. */
   bucketed: boolean
+  metric: HistoryMetric
+  /** Where "degraded" begins for this metric; drawn as a dashed line. */
+  threshold: number | undefined
 }) {
-  const chartData = toChartData(history)
+  const spec = METRICS[metric]
+  const chartData = toChartData(history, metric)
 
   // Simple heuristic: red when the most recent point got no reply.
   const lastPoint = history.length ? history[history.length - 1] : null
@@ -94,20 +111,26 @@ function HistoryChart({
           <YAxis
             tick={{ fontSize: 11 }}
             width={52}
-            unit="ms"
-            domain={[0, 'auto']}
+            unit={spec.unit}
+            // Loss is a percentage: always the full scale, so that 5% does
+            // not look like a catastrophe.
+            domain={metric === 'loss' ? [0, 100] : [0, 'auto']}
           />
           <Tooltip
             formatter={(value, name) => {
               if (name === 'band') {
                 const [low, high] = value as [number, number]
-                return [`${low.toFixed(2)} – ${high.toFixed(2)} ms`, 'min – max']
+                return [
+                  `${low.toFixed(2)} – ${high.toFixed(2)} ${spec.unit}`,
+                  spec.bandLabel,
+                ]
               }
+              const label = spec.label.toLowerCase()
               return value === null
-                ? ['down (no latency)', 'latency']
+                ? [metric === 'latency' ? 'down (no latency)' : 'not measured', label]
                 : [
-                    `${Number(value).toFixed(2)} ms`,
-                    bucketed ? 'average' : 'latency',
+                    `${Number(value).toFixed(2)} ${spec.unit}`,
+                    bucketed ? 'average' : label,
                   ]
             }}
             labelFormatter={(_label, payload) => {
@@ -119,7 +142,28 @@ function HistoryChart({
                 : when
             }}
           />
-          {/* The min–max band only means something for buckets. */}
+          {/* Where "degraded" begins. For latency the line only shows when
+              the readings come near it; for loss and jitter the axis makes
+              room for it, so the distance to it is always visible. (yAxisId
+              is spelled out because, with React 19, Recharts does not see
+              the default when it works out how far to extend the axis.) */}
+          {threshold !== undefined && (
+            <ReferenceLine
+              y={threshold}
+              yAxisId={0}
+              stroke="#f59e0b"
+              strokeDasharray="5 4"
+              ifOverflow={metric === 'jitter' ? 'extendDomain' : 'discard'}
+              label={{
+                value: `degraded from ${threshold} ${spec.unit}`,
+                // On the left: the newest readings are on the right.
+                position: 'insideTopLeft',
+                fontSize: 10,
+                fill: '#b45309',
+              }}
+            />
+          )}
+          {/* The band only means something for buckets. */}
           {bucketed && (
             <Area
               type="monotone"
@@ -133,7 +177,7 @@ function HistoryChart({
           )}
           <Line
             type="monotone"
-            dataKey="latency_ms"
+            dataKey="value"
             stroke={stroke}
             strokeWidth={2}
             dot={chartData.length > 60 ? false : { r: 2 }}
@@ -190,12 +234,20 @@ export default function DeviceDetailView() {
   const { devices, loading: devicesLoading, error: devicesError } = useDevices()
   const { statuses } = useStatusStream()
   const [range, setRange] = useState<HistoryRange>('live')
+  const [metric, setMetric] = useState<HistoryMetric>('latency')
   const {
     history,
     resolution,
     loading: historyLoading,
     error: historyError,
   } = useDeviceHistory(deviceId, range)
+  // The thresholds for the charts' "degraded from" lines.
+  const { data: settings } = usePolled(fetchSettings, 'settings', 60_000)
+  const thresholds: Record<HistoryMetric, number | undefined> = {
+    latency: settings?.latency_warn_ms,
+    loss: settings?.loss_warn_pct,
+    jitter: settings?.jitter_warn_ms,
+  }
 
   const device = devices.find((item) => item.id === deviceId)
   const status = statuses[deviceId]?.status ?? 'unknown'
@@ -269,7 +321,17 @@ export default function DeviceDetailView() {
             <InfoRow label="IP">{device.ip}</InfoRow>
             <InfoRow label="Ping port">{device.ping_port}</InfoRow>
             <InfoRow label="Current latency">
-              {formatLatency(statuses[deviceId]?.latency_ms)}
+              {formatReading(statuses[deviceId]?.latency_ms, 'ms')}
+            </InfoRow>
+            <InfoRow label="Packet loss">
+              <span data-testid="current-loss">
+                {formatReading(statuses[deviceId]?.loss_pct, '%', 0)}
+              </span>
+            </InfoRow>
+            <InfoRow label="Jitter">
+              <span data-testid="current-jitter">
+                {formatReading(statuses[deviceId]?.jitter_ms, 'ms')}
+              </span>
             </InfoRow>
             <InfoRow label="Parent">
               {device.parent_id ? (
@@ -290,10 +352,29 @@ export default function DeviceDetailView() {
         <div className="space-y-6">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">Latency history</CardTitle>
+              <CardTitle className="text-base">
+                {METRICS[metric].label} history
+              </CardTitle>
               <TimeRangeSelect value={range} onChange={setRange} />
             </CardHeader>
             <CardContent>
+              <Tabs
+                value={metric}
+                onValueChange={(next) => setMetric(next as HistoryMetric)}
+                className="mb-3"
+              >
+                <TabsList>
+                  <TabsTrigger value="latency" data-testid="metric-latency">
+                    Latency
+                  </TabsTrigger>
+                  <TabsTrigger value="loss" data-testid="metric-loss">
+                    Packet loss
+                  </TabsTrigger>
+                  <TabsTrigger value="jitter" data-testid="metric-jitter">
+                    Jitter
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
               {historyError ? (
                 <p className="text-sm text-red-600">
                   Failed to load history: {historyError}
@@ -314,12 +395,14 @@ export default function DeviceDetailView() {
                     history={history}
                     range={range}
                     bucketed={resolution !== 'raw'}
+                    metric={metric}
+                    threshold={thresholds[metric]}
                   />
                   <p
                     data-testid="history-resolution"
                     className="mt-2 text-xs text-muted-foreground"
                   >
-                    Resolution: {describeResolution(resolution)} ·{' '}
+                    Resolution: {describeResolution(resolution, metric)} ·{' '}
                     {history.length} points
                   </p>
                 </div>

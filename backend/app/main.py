@@ -65,7 +65,9 @@ def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
     """Shape the store's state into the JSON payload sent to clients.
 
     ``status`` is the confirmed (debounced) status. ``raw_status`` and the two
-    counters were added with debouncing; the first three keys are unchanged.
+    counters were added with debouncing, and the last four keys with multi-ping
+    probing (``latency_ms`` is the average of a cycle's probes); the first
+    three keys are unchanged.
     """
     return {
         device_id: {
@@ -75,6 +77,10 @@ def serialize_snapshot(snapshot: dict[str, DeviceStatus]) -> dict:
             "raw_status": status.raw_status or status.status,
             "consecutive_failures": status.consecutive_failures,
             "consecutive_successes": status.consecutive_successes,
+            "latency_min_ms": status.latency_min_ms,
+            "latency_max_ms": status.latency_max_ms,
+            "loss_pct": status.loss_pct,
+            "jitter_ms": status.jitter_ms,
         }
         for device_id, status in snapshot.items()
     }

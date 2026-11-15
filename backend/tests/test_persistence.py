@@ -445,7 +445,10 @@ async def test_history_endpoint_with_a_window(client, admin_headers):
         "fw-01", "1h", "raw", None,
     )
     assert len(body["points"]) == 3
-    assert set(body["points"][0]) == {"timestamp", "latency_ms", "min_ms", "max_ms", "sample_count", "fail_count"}
+    assert set(body["points"][0]) == {
+        "timestamp", "latency_ms", "min_ms", "max_ms", "sample_count", "fail_count",
+        "loss_pct", "loss_max_pct", "jitter_ms", "jitter_max_ms",  # added with multi-ping probing
+    }
     assert body["points"][0]["timestamp"].endswith("Z")
 
     bucketed = client.get("/api/history/fw-01", headers=admin_headers, params={"window": "24h"}).json()
@@ -458,9 +461,10 @@ async def test_history_endpoint_without_a_window_is_unchanged(client, admin_head
 
     body = client.get("/api/history/fw-01", headers=admin_headers).json()
 
-    # Still a bare list of {latency_ms, timestamp}, as before this feature.
+    # Still a bare list of samples with latency_ms and timestamp, as before
+    # this feature. Packet loss and jitter were added to each sample later.
     assert isinstance(body, list)
-    assert [set(sample) for sample in body] == [{"latency_ms", "timestamp"}] * 2
+    assert [set(sample) for sample in body] == [{"latency_ms", "timestamp", "loss_pct", "jitter_ms"}] * 2
 
 
 def test_history_endpoint_rejects_an_unknown_window_or_device(client, admin_headers):

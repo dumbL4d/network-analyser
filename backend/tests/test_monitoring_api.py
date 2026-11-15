@@ -16,6 +16,9 @@ from app.services.history_store import history_store
 from app.services.status_store import status_store
 from tests.helpers import make_status, seed_devices
 
+# What a status carries about its probes when nothing was measured.
+NO_PROBE_DETAILS = {"latency_min_ms": None, "latency_max_ms": None, "loss_pct": None, "jitter_ms": None}
+
 # --- health / status -----------------------------------------------------------
 
 
@@ -49,6 +52,8 @@ def test_status_returns_the_latest_reading_per_device(client, admin_headers):
             "raw_status": "healthy",
             "consecutive_failures": 0,
             "consecutive_successes": 0,
+            # ...and the ones added with multi-ping probing (none measured here).
+            **NO_PROBE_DETAILS,
         },
         "sw-ot": {
             "status": "healthy",
@@ -57,6 +62,7 @@ def test_status_returns_the_latest_reading_per_device(client, admin_headers):
             "raw_status": "down",
             "consecutive_failures": 1,
             "consecutive_successes": 0,
+            **NO_PROBE_DETAILS,
         },
     }
     assert healthy.timestamp.isoformat().endswith("+00:00")  # the format clients receive
@@ -87,8 +93,19 @@ def test_history_returns_the_samples_oldest_first(client, admin_headers):
 
     assert client.get("/api/history/fw-01", headers=admin_headers).json() == [
         # Unlike /api/status, this endpoint writes UTC as "Z".
-        {"latency_ms": 1.5, "timestamp": first.timestamp.isoformat().replace("+00:00", "Z")},
-        {"latency_ms": None, "timestamp": second.timestamp.isoformat().replace("+00:00", "Z")},
+        # Packet loss and jitter were added later; these readings measured none.
+        {
+            "latency_ms": 1.5,
+            "timestamp": first.timestamp.isoformat().replace("+00:00", "Z"),
+            "loss_pct": None,
+            "jitter_ms": None,
+        },
+        {
+            "latency_ms": None,
+            "timestamp": second.timestamp.isoformat().replace("+00:00", "Z"),
+            "loss_pct": None,
+            "jitter_ms": None,
+        },
     ]
 
 
@@ -223,6 +240,7 @@ async def test_status_stream_sends_the_snapshot_then_each_update_then_unsubscrib
             "raw_status": "down",
             "consecutive_failures": 0,
             "consecutive_successes": 0,
+            **NO_PROBE_DETAILS,
         }
     }
 

@@ -14,6 +14,10 @@ entire warehouse LAN so the whole system runs on one machine.
 
 - **ICMP monitoring** — an async `icmplib` ping engine probes every device on a
   configurable interval (~10 s default) and classifies each one.
+- **Packet loss and jitter** — each cycle sends several pings per device (4 by
+  default), so besides latency the monitor measures how many were lost and
+  how much the round-trip time varies, and counts too much of either as
+  degraded.
 - **Debounced status** — a device changes state only after several polls in a
   row agree (3 to get worse, 2 to recover by default), so one lost ping does
   not raise an incident.
@@ -196,10 +200,10 @@ tasks: the poll loop and the hourly retention job (see
 ```mermaid
 flowchart TD
     A["Startup: migrate DB (alembic upgrade head),<br/>seed devices / users / settings"] --> B["Start poll loop task"]
-    B --> C["Read AppSettings row from DB<br/>(poll interval, latency and debounce thresholds)"]
+    B --> C["Read AppSettings row from DB<br/>(poll interval, pings per cycle, thresholds)"]
     C --> D["Load devices (id, ip) from Device table"]
-    D --> E["ping_all()<br/>concurrent async ICMP probes via icmplib"]
-    E --> F["classify_status() per device: the RAW result<br/>healthy / degraded / down / unknown"]
+    D --> E["ping_all()<br/>all devices at once, several pings each (icmplib)"]
+    E --> F["classify_probes() per device: the RAW result<br/>healthy / degraded / down / unknown<br/>from latency, packet loss and jitter"]
     F --> K["debouncer.apply()<br/>raw results in, CONFIRMED status out"]
     F --> H["history_store.record()<br/>raw readings, rolling deques"]
     K --> G["status_store.update()<br/>confirmed status, notify SSE subscribers"]
@@ -214,23 +218,70 @@ flowchart TD
 
 Everything the poll loop needs is re-read from the DB-backed `AppSettings`
 singleton at the **start of every cycle**, so an admin editing the poll
-interval, the latency thresholds or the debounce thresholds in the UI takes
-effect within one cycle — no backend restart required.
+interval, the probe settings, the latency, loss and jitter thresholds or the
+debounce thresholds in the UI takes effect within one cycle — no backend
+restart required.
 
 Setting `POLL_ENABLED=False` starts the API without the background tasks (the
 test suite does this). Nothing is pinged, so every device stays `unknown`, and
 the retention job does not run.
 
+### Probing: latency, packet loss and jitter
+
+Every cycle each device gets `pings_per_cycle` echo requests (4 by default),
+`ping_gap_ms` apart (200 ms), in one call to
+`icmplib.async_ping(address, count=..., interval=...)`. All devices are probed
+at the same time. Three figures come out of a device's replies:
+
+| Figure       | What it is                                                         | Example: replies of 10, 12 and 30 ms, one probe lost |
+| ------------ | ------------------------------------------------------------------ | ---------------------------------------------------- |
+| `latency_ms` | average round-trip time (with its minimum and maximum)             | (10 + 12 + 30) / 3 = 17.3 ms                         |
+| `loss_pct`   | share of the probes without a reply                                | 1 of 4 = 25%                                         |
+| `jitter_ms`  | mean absolute difference of consecutive round-trip times           | (\|12 − 10\| + \|30 − 12\|) / 2 = 10 ms                |
+
+Jitter needs two replies to compare, so it is empty when fewer came back. Both
+formulas are small pure functions in `backend/app/services/ping_engine.py`.
+
+The four probe settings live in `AppSettings` and are edited in Admin,
+Settings:
+
+| Setting           | Default | Allowed            | Meaning                                         |
+| ----------------- | ------- | ------------------ | ----------------------------------------------- |
+| `pings_per_cycle` | `4`     | 1 – 10             | Echo requests per device per cycle              |
+| `ping_gap_ms`     | `200`   | 10 – 5000          | Pause between them                              |
+| `loss_warn_pct`   | `20`    | above 0, up to 100 | Degraded from this much packet loss             |
+| `jitter_warn_ms`  | `30`    | above 0            | Degraded from this much jitter                  |
+
+A combination is rejected, with the arithmetic in the message, unless
+`pings_per_cycle × ping_gap_ms + the ping timeout` fits in 80% of the poll
+interval. With the defaults that is 4 × 0.2 s + 2 s = 2.8 s of the 8 s that a
+10 s interval allows.
+
+> **How long a cycle really takes.** That sum is the time for a device that
+> answers. icmplib sends the probes one after the other and waits up to the
+> ping timeout (`PING_TIMEOUT_SECONDS`, 2 s) for each reply, so a device that
+> does not answer at all takes `pings × timeout + (pings − 1) × gap`: 8.6 s
+> with the defaults. The poll interval is the pause between two cycles, so
+> cycles never overlap; they just come less often while a device is down
+> (measured on the simulated network: every 10.6 s normally, every 18.6 s
+> with one device down). Where that is too slow, lower `PING_TIMEOUT_SECONDS`
+> or `pings_per_cycle`.
+
 ### Device status classification
 
-Each probe is classified against live latency thresholds:
+Each cycle's probes are classified against the live thresholds:
 
-| Result          | Condition                                        |
-| --------------- | ------------------------------------------------ |
-| `healthy`       | reachable, latency ≤ warn threshold              |
-| `degraded`      | reachable, latency > warn **or** > crit threshold |
-| `down`          | unreachable (ICMP timed out)                     |
-| `unknown`       | probe failed with an exception (no result)       |
+| Result     | Condition                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `down`     | no probe was answered (100% packet loss)                                                                                                   |
+| `degraded` | answered, and packet loss ≥ `loss_warn_pct`, **or** jitter ≥ `jitter_warn_ms`, **or** average latency > the warn (or crit) latency threshold |
+| `healthy`  | answered, and none of the above                                                                                                            |
+| `unknown`  | the probe itself failed with an exception (no result)                                                                                      |
+
+With `pings_per_cycle = 1` packet loss and jitter are not looked at: a device
+is degraded by latency alone, exactly as before there were several probes,
+whatever the loss and jitter thresholds say. The result is the raw status,
+which then goes through the debouncer below, unchanged.
 
 ### Status debouncing
 
@@ -286,13 +337,20 @@ the confirmed status plus the raw details. This one has just missed a poll:
     "timestamp": "2026-11-15T10:00:20.123456+00:00",
     "raw_status": "down",
     "consecutive_failures": 1,
-    "consecutive_successes": 0
+    "consecutive_successes": 0,
+    "latency_min_ms": null,
+    "latency_max_ms": null,
+    "loss_pct": 100.0,
+    "jitter_ms": null
   }
 }
 ```
 
 - `status` is the confirmed status; `raw_status` is the latest poll's result.
-- `latency_ms` and `timestamp` belong to the latest poll.
+- `latency_ms` and `timestamp` belong to the latest poll. `latency_ms` is the
+  average of its probes; `latency_min_ms` and `latency_max_ms` are the fastest
+  and the slowest reply, `loss_pct` the share of probes without one, and
+  `jitter_ms` the jitter (see "Probing" above).
 - `consecutive_failures` / `consecutive_successes` count the polls in a row
   that were not healthy / were healthy.
 
@@ -672,8 +730,8 @@ flowchart LR
 
     subgraph Views["Authenticated views"]
         T["/ — TopologyView<br/>(@xyflow/react graph: parent links, dashed extra links,<br/>SPOF badges, What-if panel)"]
-        D["/devices/:id — DeviceDetailView<br/>(latency chart with time range + status)"]
-        M["/metrics — MetricsView<br/>(Latency with time range & Status Overview tabs, recharts)"]
+        D["/devices/:id — DeviceDetailView<br/>(latency, packet loss and jitter charts with time range + status)"]
+        M["/metrics — MetricsView<br/>(Latency, Loss & jitter and Status Overview tabs, recharts)"]
         S["/stability — StabilityView<br/>(flap-count bar ranking + availability table)"]
         I["/incidents — IncidentView<br/>(summary cards, Active and History tabs, playbook stepper)"]
         IDV["/incidents/:id — IncidentDetailView<br/>(event timeline, plus acknowledge and notes for admins)"]
@@ -719,12 +777,20 @@ state filter and paging. An incident's own page shows its details and
 timeline; admins also get an Acknowledge button and a note form. The Stability
 page has an availability table with a 24 hours / 7 days / 30 days selector.
 
-The latency charts (device detail, and the Latency tab of Metrics) have a
-time-range selector: **Live** (the most recent samples, refreshed every 10 s),
-or the last hour, 6 hours, 24 hours, 7 days or 30 days (refreshed every
-minute). For the longer ranges the backend returns time buckets, and the chart
-draws the average as a line over a shaded min–max band. The resolution in use
+The history charts (device detail, and the Latency and Loss & jitter tabs of
+Metrics) have a time-range selector: **Live** (the most recent samples,
+refreshed every 10 s), or the last hour, 6 hours, 24 hours, 7 days or 30 days
+(refreshed every minute). For the longer ranges the backend returns time
+buckets, and the chart draws the average as a line over a shaded band
+(min–max for latency, average–peak for loss and jitter). The resolution in use
 is shown under the chart.
+
+The device page switches its chart between latency, packet loss and jitter,
+and shows the current loss and jitter next to the current latency. Each chart
+has a dashed line where "degraded" begins, taken from the settings. The Loss &
+jitter tab of Metrics lists every device, worst packet loss first, with a
+sparkline, the mean and the peak for each of the two; a figure at or over its
+threshold is highlighted.
 
 ## Simulated network topology
 
@@ -895,10 +961,11 @@ flap counts survive a backend restart.
 
 - **`latency_sample`**: one row per device per poll (the raw data). Columns:
   `device_id`, `ts`, `latency_ms` (null when there was no reply),
-  `raw_status`, `confirmed_status`.
+  `raw_status`, `confirmed_status`, `loss_pct`, `jitter_ms`.
 - **`latency_rollup_1m`**: one row per device per minute. Columns:
   `device_id`, `bucket_start`, `min`, `avg`, `max`, `sample_count`,
-  `fail_count`.
+  `fail_count`, and for packet loss and jitter `loss_avg`, `loss_max`,
+  `loss_count`, `jitter_avg`, `jitter_max`, `jitter_count`.
 - **`status_transition`**: one row per confirmed status change (a flap).
   Columns: `device_id`, `ts`, `from_status`, `to_status`.
 - **`incident`**: one row per outage (see "Incident lifecycle"). Columns:
@@ -919,7 +986,10 @@ flap counts survive a backend restart.
 `latency_rollup_1m` is unique on `(device_id, bucket_start)`. `incident` has a
 partial unique index that allows one unresolved incident per root device. All
 timestamps are UTC. In a rollup, `min` / `avg` / `max` cover the polls that
-got a reply and `fail_count` is the number that did not. The history and
+got a reply and `fail_count` is the number that did not. Loss and jitter are
+averaged over the polls that measured them (`loss_count`, `jitter_count`),
+which is what keeps the averages exact when rollups are merged; rows from
+before they were measured have none. The history and
 incident tables do not reference `device`, so the history of a deleted device
 simply ages out. Incidents are the exception to ageing out: there are few of
 them, so they are kept until the database is deleted. `device_link` is
@@ -957,8 +1027,9 @@ The rollup is safe to run again at any time. Each batch of raw samples is
 added to the rollups and deleted in the same transaction, so a sample is
 always in exactly one place. If a rollup row for that minute already exists,
 the new samples are merged into it: counts are added, min and max are
-combined, and the average is re-weighted by the number of replies. A minute is
-rolled up only once all of it is older than the cutoff.
+combined, and each average is re-weighted by the number of polls it is over
+(replies for latency, measurements for loss and jitter). A minute is rolled up
+only once all of it is older than the cutoff.
 
 ### Retention settings
 
@@ -978,8 +1049,10 @@ roughly 104,000 raw rows and 518,000 rollup rows.
 
 ### Reading history
 
-`GET /api/history/{id}` without parameters is unchanged: a list of the most
-recent samples, `[{"latency_ms": ..., "timestamp": ...}]`, served from memory.
+`GET /api/history/{id}` without parameters is a list of the most recent
+samples, served from memory:
+`[{"latency_ms": ..., "timestamp": ..., "loss_pct": ..., "jitter_ms": ...}]`
+(the last two were added with multi-ping probing).
 
 With `?window=` it reads the database and returns a time range. The resolution
 is chosen by the window, so every range is a few hundred points:
@@ -1005,17 +1078,24 @@ is chosen by the window, so every range is a few hundred points:
       "min_ms": 0.9,
       "max_ms": 3.2,
       "sample_count": 30,
-      "fail_count": 0
+      "fail_count": 0,
+      "loss_pct": 2.5,
+      "loss_max_pct": 25.0,
+      "jitter_ms": 0.6,
+      "jitter_max_ms": 4.1
     }
   ]
 }
 ```
 
 In a bucket, `latency_ms` is the average over the polls that got a reply (null
-if none did). For `raw`, each point is one poll, so `min_ms` and `max_ms` equal
-`latency_ms` and `sample_count` is 1. Buckets are built from the rollups plus
-the raw samples that have not been rolled up yet, so the most recent day is
-always included.
+if none did). `loss_pct` and `jitter_ms` are the bucket's averages and
+`loss_max_pct` and `jitter_max_ms` its highest single poll; all four are null
+for history from before they were measured. For `raw`, each point is one
+poll, so `min_ms` and `max_ms` equal `latency_ms`, the two `_max` fields equal
+their readings, and `sample_count` is 1. Buckets are built from the rollups
+plus the raw samples that have not been rolled up yet, so the most recent day
+is always included.
 
 ### Flap counts
 
@@ -1044,6 +1124,9 @@ its data.
 - `0005` adds `device_link`, the extra links between devices.
 - `0006` adds `audit_event` (the audit log) and two columns to `user`:
   `must_change_password` and `created_at`. Existing accounts keep working.
+- `0007` adds the four probe settings to `appsettings`, and packet loss and
+  jitter to `latency_sample` and `latency_rollup_1m`. Existing history keeps
+  its latency and has no loss or jitter.
 
 Every change to a model in `backend/app/models/` needs a migration:
 
@@ -1052,7 +1135,7 @@ cd backend
 source .venv/bin/activate
 alembic upgrade head      # bring your local database up to date first
 # ...edit the model...
-alembic revision --autogenerate --rev-id 0007 -m "describe the change"
+alembic revision --autogenerate --rev-id 0008 -m "describe the change"
 # review the new file in app/db/migrations/versions/, then:
 alembic upgrade head      # or simply start the backend
 pytest                    # test_migrations.py fails if a model has no migration

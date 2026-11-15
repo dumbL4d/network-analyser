@@ -20,7 +20,14 @@ from app.services.flap_store import flap_store
 from app.services.history_store import history_store
 from app.services.incident_tracker import incident_tracker
 from app.services.persistence import persist_cycle
-from app.services.ping_engine import PingFn, ping_all
+from app.services.ping_engine import (
+    DEFAULT_JITTER_WARN_MS,
+    DEFAULT_LOSS_WARN_PCT,
+    DEFAULT_PING_GAP_MS,
+    DEFAULT_PINGS_PER_CYCLE,
+    PingFn,
+    ping_all,
+)
 from app.services.status_store import status_store
 
 logger = logging.getLogger(__name__)
@@ -38,8 +45,9 @@ async def run_poll_loop(
 ) -> None:
     """Ping all devices forever, publishing each snapshot to the status store.
 
-    The monitoring-behavior values (poll interval, latency thresholds and the
-    debounce thresholds) are re-read from the DB-backed ``AppSettings``
+    The monitoring-behavior values (poll interval, how many probes per cycle,
+    the latency, loss and jitter thresholds and the debounce thresholds) are
+    re-read from the DB-backed ``AppSettings``
     singleton at the START of every iteration, so admin edits take effect
     within one cycle without a backend restart. Timeout and privileged mode
     remain low-level concerns read from the static .env-backed ``Settings``
@@ -78,12 +86,20 @@ async def run_poll_loop(
                 crit_threshold = settings.LATENCY_CRIT_MS
                 failure_threshold = DEFAULT_FAILURE_THRESHOLD
                 recovery_threshold = DEFAULT_RECOVERY_THRESHOLD
+                pings = DEFAULT_PINGS_PER_CYCLE
+                gap_ms = DEFAULT_PING_GAP_MS
+                loss_warn_pct = DEFAULT_LOSS_WARN_PCT
+                jitter_warn_ms = DEFAULT_JITTER_WARN_MS
             else:
                 interval = app_settings.poll_interval_seconds
                 warn_threshold = app_settings.latency_warn_ms
                 crit_threshold = app_settings.latency_crit_ms
                 failure_threshold = app_settings.failure_threshold
                 recovery_threshold = app_settings.recovery_threshold
+                pings = app_settings.pings_per_cycle
+                gap_ms = app_settings.ping_gap_ms
+                loss_warn_pct = app_settings.loss_warn_pct
+                jitter_warn_ms = app_settings.jitter_warn_ms
 
             devices = _load_devices()
             results = await ping_all(
@@ -93,6 +109,10 @@ async def run_poll_loop(
                 warn_threshold=warn_threshold,
                 crit_threshold=crit_threshold,
                 ping=ping,
+                pings=pings,
+                gap_seconds=gap_ms / 1000,
+                loss_warn_pct=loss_warn_pct,
+                jitter_warn_ms=jitter_warn_ms,
             )
             # `results` are this cycle's raw readings. The debouncer works out
             # each device's confirmed status, and forgets devices that were not
