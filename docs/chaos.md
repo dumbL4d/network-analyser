@@ -142,11 +142,11 @@ Linux host `sudo modprobe sch_netem` loads it.
 | `flapping-plc`        | Switches `plc-conveyor-1` off and on every 80 s for about 7 minutes. | Stability: the PLC climbs the flap ranking. Incidents: it opens and resolves.   |
 | `degraded-uplink`     | Adds 200 ms delay, 40 ms jitter and 2% loss to `sw-edge`.            | Topology: `sw-edge` turns degraded (latency above the warning threshold).       |
 
-Allow about a minute with the default settings for a failure to be confirmed
-(three polls, each slowed down by the ping timeouts of the stopped devices),
-and about 20 seconds for a recovery: the debouncer waits for polls to agree.
-That is also why a flap must be slow to be seen. A device that is off for
-less than three polls never becomes "down" at all.
+Allow about 15 seconds with the default settings for a failure to be
+confirmed (three results in a row: a poll and the two retries after it),
+and about as long for a recovery (two polls): the debouncer waits for
+results to agree. That is also why a flap must be slow to be seen. A device
+that is off for less than those three results never becomes "down" at all.
 
 ## API
 

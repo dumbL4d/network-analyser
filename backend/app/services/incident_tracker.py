@@ -2,7 +2,8 @@
 
 ``analyze_incidents`` (app/services/incident_analysis.py) answers "what is
 wrong right now?" and remembers nothing. This module adds the memory. After
-every poll cycle the poll loop calls the tracker, which compares the analysis
+every poll cycle, and after a retry that changed a status, the poll loop calls
+the tracker, which compares the analysis
 with the unresolved incidents in the database, keyed by root-cause device:
 
 * a root cause with no unresolved incident    -> a new incident is OPENED;

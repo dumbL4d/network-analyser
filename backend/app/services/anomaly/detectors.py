@@ -36,8 +36,8 @@ from dataclasses import dataclass
 WARMUP_SAMPLES = 30
 
 # A detector that freezes its baseline accepts a level that has stayed above
-# it for this many readings in a row as the new normal: an hour, at one
-# reading every 10 seconds.
+# it for this many readings in a row as the new normal: 48 minutes at the
+# default of one reading every 8 seconds (an hour at one every 10).
 RELEARN_AFTER_SAMPLES = 360
 
 

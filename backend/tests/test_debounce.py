@@ -25,6 +25,7 @@ from app.services.debounce import (
     SEVERITY,
     Debouncer,
     DebounceState,
+    is_suspect,
     state_from_history,
     step,
 )
@@ -425,6 +426,63 @@ def test_state_of_a_device_that_is_no_longer_polled_is_dropped():
     # is accepted at once, while "a" is still one lost ping short of down.
     confirmed = debouncer.apply([make_status("a", "down"), make_status("b", "down")])
     assert [r.status for r in confirmed] == ["healthy", "down"]
+
+
+# --- suspects, and the retries that settle them ----------------------------------
+
+
+@pytest.mark.parametrize("confirmed", STATUSES)
+@pytest.mark.parametrize("raw", STATUSES)
+def test_a_device_is_suspect_while_its_raw_result_is_worse_than_its_confirmed_status(confirmed, raw):
+    reading = make_status("a", confirmed).model_copy(update={"raw_status": raw})
+
+    assert is_suspect(reading) is (STATUSES.index(raw) > STATUSES.index(confirmed))
+
+
+def test_a_reading_that_has_not_been_debounced_is_not_suspect():
+    assert is_suspect(make_status("a", "down")) is False  # straight from the ping engine
+
+
+def test_apply_says_which_devices_are_left_suspect():
+    debouncer = Debouncer()
+    debouncer.apply([make_status(device, "healthy", 1.0) for device in "abc"])
+
+    confirmed = debouncer.apply(
+        [make_status("a", "down"), make_status("b", "healthy", 1.0), make_status("c", "degraded", 900.0)]
+    )
+
+    assert [is_suspect(reading) for reading in confirmed] == [True, False, True]
+
+
+def test_a_retry_counts_like_a_poll_and_the_devices_it_left_out_keep_their_state():
+    debouncer = Debouncer()
+    debouncer.apply([make_status("a", "healthy", 1.0), make_status("b", "healthy", 1.0)])
+    debouncer.apply([make_status("a", "down"), make_status("b", "down")])  # the poll: 1 of 3 each
+
+    (second,) = debouncer.apply([make_status("a", "down")], retry=True)
+    (third,) = debouncer.apply([make_status("a", "down")], retry=True)
+
+    # One poll and two retries are three results in a row: "a" is down.
+    assert (second.status, second.raw_status, second.consecutive_failures) == ("healthy", "down", 2)
+    assert (third.status, third.raw_status, third.consecutive_failures) == ("down", "down", 3)
+    assert is_suspect(second) and not is_suspect(third)
+    # "b" was not retried. It is still remembered, one failure in.
+    state = debouncer.get_states()["b"]
+    assert (state.confirmed, state.consecutive_failures) == ("healthy", 1)
+
+
+def test_a_retry_that_gets_an_answer_ends_the_suspicion():
+    debouncer = Debouncer()
+    debouncer.apply([make_status("a", "healthy", 1.0)])
+    debouncer.apply([make_status("a", "down")])
+
+    (retried,) = debouncer.apply([make_status("a", "healthy", 1.0)], retry=True)
+
+    assert (retried.status, retried.consecutive_failures, is_suspect(retried)) == ("healthy", 0, False)
+    # And the count starts again: two more lost polls are not three in a row.
+    for _ in range(2):
+        (confirmed,) = debouncer.apply([make_status("a", "down")])
+    assert confirmed.status == "healthy"
 
 
 # --- rebuilding state after a restart ------------------------------------------

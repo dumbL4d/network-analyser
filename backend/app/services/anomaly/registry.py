@@ -3,7 +3,9 @@
 Every cycle the loop hands over its raw readings (``observe``). Each reading's
 latency and packet loss go to that device's detectors, and the readings come
 back with what was found in ``anomaly``. The registry also says which
-anomalies began or ended in this cycle, so that they can be stored.
+anomalies began or ended in this cycle, so that they can be stored. The
+retries of suspect devices between two cycles are never handed over: a
+baseline is learned from one reading per cycle.
 
 Advisory only: nothing here touches a reading's status.
 

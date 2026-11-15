@@ -2,8 +2,8 @@
 
 The ping engine classifies every device once per poll cycle. That *raw* result
 is noisy: one cycle of lost packets reads as "degraded" or "down". This module turns the stream of
-raw results into a *confirmed* status that changes only when several polls in a
-row agree.
+raw results into a *confirmed* status that changes only when several results in
+a row agree.
 
 Statuses are ranked by how bad they are::
 
@@ -20,9 +20,14 @@ Statuses are ranked by how bad they are::
 * Otherwise nothing changes.
 
 So with the defaults (3 and 2): a device is marked down only after three "down"
-polls in a row, and healthy again only after two "healthy" polls in a row.
+results in a row, and healthy again only after two "healthy" polls in a row.
 healthy <-> degraded follows the same two rules. With both thresholds at 1
 every raw result is confirmed at once, i.e. debouncing is off.
+
+A device whose latest result is worse than its confirmed status is *suspect*
+(:func:`is_suspect`). The poll loop probes it again shortly after, instead of
+waiting for the next cycle, and such a retry is a result like any other here:
+the three results in a row may be one poll and two retries.
 
 Everything here is pure and in-memory: no I/O, no database, no clock.
 """
@@ -121,6 +126,16 @@ def step(
     )
 
 
+def is_suspect(reading: DeviceStatus) -> bool:
+    """Whether a confirmed reading's raw result is worse than its confirmed
+    status: a failure that is not confirmed yet (what Nagios calls a "soft"
+    state)."""
+    return (
+        reading.raw_status is not None
+        and SEVERITY[reading.raw_status] > SEVERITY[reading.status]
+    )
+
+
 def state_from_history(
     confirmed: StatusKey,
     raws: Sequence[StatusKey],
@@ -168,6 +183,8 @@ class Debouncer:
         results: list[DeviceStatus],
         failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
         recovery_threshold: int = DEFAULT_RECOVERY_THRESHOLD,
+        *,
+        retry: bool = False,
     ) -> list[DeviceStatus]:
         """Turn one cycle's raw results into confirmed ones, in the same order.
 
@@ -177,8 +194,10 @@ class Debouncer:
 
         Only the devices in ``results`` are remembered afterwards, so the state
         of a device that has been deleted (and is no longer polled) is dropped.
+        A retry (``retry=True``) probes the suspect devices only, so there
+        every other device keeps its state.
         """
-        states: dict[str, DebounceState] = {}
+        states: dict[str, DebounceState] = dict(self._states) if retry else {}
         confirmed: list[DeviceStatus] = []
         for reading in results:
             state = step(

@@ -3,7 +3,8 @@
 It holds the most recent ``HISTORY_MAX_SAMPLES`` raw readings of each device.
 It is fed by the poll loop from the same ``results`` list that updates the
 live status store, and read back on demand by the REST history endpoint for
-sparkline charts.
+sparkline charts. One reading per device per poll cycle: the retry of a
+suspect device (see app/services/poll_loop.py) is not recorded.
 
 The readings are also written to the ``latency_sample`` table, and at startup
 this cache is refilled from it (app/services/persistence.py), so the history

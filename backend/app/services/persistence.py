@@ -172,13 +172,28 @@ def warm_caches(now: datetime | None = None) -> None:
       (within the ``MAX_THRESHOLD`` polls the debouncer remembers). After a
       longer gap the old streak means nothing, and the device's next result is
       accepted as a first result.
+
+    A device's confirmed status is the one of its last sample, unless a status
+    change was stored after it: the retry of a suspect device can confirm a
+    status and stores the change, but no sample (see app/services/poll_loop.py).
     """
     now = now or _now()
     last_status: dict[str, str] = {}
     changes: dict[str, list[datetime]] = {}
+    # device -> (when, to which status) of its latest stored change.
+    last_change: dict[str, tuple[datetime, str]] = {}
     states = {}
 
     with engine.connect() as connection:
+        flap_since = now - timedelta(days=settings.TRANSITION_RETENTION_DAYS)
+        for device_id, ts, to_status in connection.execute(
+            select(TRANSITIONS.c.device_id, TRANSITIONS.c.ts, TRANSITIONS.c.to_status)
+            .where(TRANSITIONS.c.ts >= flap_since)
+            .order_by(TRANSITIONS.c.ts)
+        ):
+            changes.setdefault(device_id, []).append(ts)
+            last_change[device_id] = (ts, to_status)
+
         poll_interval = connection.execute(
             select(AppSettings.__table__.c.poll_interval_seconds)
         ).scalar()
@@ -209,7 +224,11 @@ def warm_caches(now: datetime | None = None) -> None:
                 device_id,
                 [HistorySample(row.latency_ms, row.ts, row.loss_pct, row.jitter_ms) for row in rows],
             )
-            last_status[device_id] = rows[-1].confirmed_status
+            confirmed = rows[-1].confirmed_status
+            changed_at, changed_to = last_change.get(device_id, (rows[-1].ts, confirmed))
+            if changed_at > rows[-1].ts:
+                confirmed = changed_to  # confirmed by a retry, after the last sample
+            last_status[device_id] = confirmed
             if now - rows[-1].ts <= fresh_for:
                 # The first sample of the run of failures at the end, if any.
                 failing_since = None
@@ -218,16 +237,8 @@ def warm_caches(now: datetime | None = None) -> None:
                         break
                     failing_since = row.ts
                 states[device_id] = state_from_history(
-                    rows[-1].confirmed_status, [row.raw_status for row in rows], failing_since
+                    confirmed, [row.raw_status for row in rows], failing_since
                 )
-
-        flap_since = now - timedelta(days=settings.TRANSITION_RETENTION_DAYS)
-        for device_id, ts in connection.execute(
-            select(TRANSITIONS.c.device_id, TRANSITIONS.c.ts)
-            .where(TRANSITIONS.c.ts >= flap_since)
-            .order_by(TRANSITIONS.c.ts)
-        ):
-            changes.setdefault(device_id, []).append(ts)
 
     flap_store.restore(last_status, changes)
     debouncer.restore(states)

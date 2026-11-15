@@ -33,10 +33,11 @@ def after(seconds: float) -> datetime:
 @pytest.mark.parametrize(
     ("poll_interval", "pings", "gap_ms", "timeout", "expected"),
     [
-        (10.0, 4, 200, 2.0, 38.6),  # the defaults
-        (10.0, 1, 200, 2.0, 32.0),  # a single ping has no gap to wait for
-        (5.0, 4, 200, 1.0, 19.6),
-        (60.0, 10, 1000, 2.0, 209.0),
+        (8.0, 4, 200, 2.0, 26.6),  # the defaults: 24 s, 3 gaps of 0.2 s, the last ping's 2 s
+        (8.0, 1, 200, 2.0, 26.0),  # a single ping has no gap to wait for
+        (8.0, 4, 1000, 2.0, 29.0),
+        (5.0, 4, 200, 1.0, 16.6),
+        (60.0, 10, 1000, 2.0, 191.0),
     ],
 )
 def test_stale_after_three_intervals_plus_the_longest_one_cycle_can_ping(
@@ -160,8 +161,8 @@ def test_the_real_clock_is_used_when_no_time_is_passed():
 # --- the real poll loop ----------------------------------------------------------
 
 # What the suite's settings allow (conftest.py and the seeded settings row):
-# 3 poll intervals of 10 s, plus 4 pings that each wait 2 s, 0.2 s apart.
-SEEDED_LIMIT = 38.6
+# 3 poll intervals of 8 s, plus 4 pings sent 0.2 s apart, the last waiting 2 s.
+SEEDED_LIMIT = 26.6
 
 
 @pytest.fixture
@@ -204,7 +205,7 @@ async def test_the_loop_notes_every_completed_cycle(clock):
     await run_cycles(3, FakePing(), after_cycle)
 
     assert seen == [after(0).isoformat(), after(15).isoformat(), after(30).isoformat()]
-    # With the suite's settings the next one is overdue 38.6 s after the last.
+    # With the suite's settings the next one is overdue 26.6 s after the last.
     assert poll_health.report(now=after(30 + SEEDED_LIMIT - 0.1))["poll_stale"] is False
     assert poll_health.report(now=after(30 + SEEDED_LIMIT + 0.1))["poll_stale"] is True
 
@@ -215,15 +216,15 @@ async def test_the_limit_follows_the_settings_the_cycle_ran_with(clock):
 
     await run_cycles(1, FakePing())
 
-    # 3 x 60 s, plus 3 pings that each wait 2 s, 0.5 s apart.
-    assert poll_health.report(now=after(187))["poll_stale"] is False
-    assert poll_health.report(now=after(187.1))["poll_stale"] is True
+    # 3 x 60 s, plus 3 pings sent 0.5 s apart, the last of which waits 2 s.
+    assert poll_health.report(now=after(183))["poll_stale"] is False
+    assert poll_health.report(now=after(183.1))["poll_stale"] is True
 
 
 @pytest.mark.usefixtures("db")
 async def test_a_loop_whose_cycles_all_fail_goes_stale(clock, monkeypatch):
-    # Not even the settings can be read, so the limit stays the 38.6 s that
-    # the .env fallbacks allow.
+    # Not even the settings can be read, so the limit stays the 32.6 s that
+    # the .env fallbacks allow (PING_INTERVAL_SECONDS is 10 s in this suite).
     monkeypatch.setattr(poll_loop, "Session", locked)
     seen = []
 
@@ -271,7 +272,7 @@ async def test_a_cycle_whose_database_write_fails_still_counts(monkeypatch, step
 @pytest.mark.usefixtures("db")
 async def test_a_cycle_is_not_overdue_for_running_with_slower_settings(clock):
     # Stored settings under which the pings of one cycle take 45 s, on a loop
-    # that started with the 38.6 s the .env fallbacks allow.
+    # that started with the 32.6 s the .env fallbacks allow.
     store_settings(poll_interval_seconds=120.0, pings_per_cycle=10, ping_gap_ms=5000)
     fake_ping = FakePing()
     overdue = []

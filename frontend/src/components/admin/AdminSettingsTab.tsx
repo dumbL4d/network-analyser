@@ -220,7 +220,7 @@ export default function AdminSettingsTab() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="set-failure">
-                  Failure threshold (polls, 1–10)
+                  Failure threshold (results, 1–10)
                 </Label>
                 <Input
                   id="set-failure"
@@ -255,8 +255,10 @@ export default function AdminSettingsTab() {
             </div>
             <p className="text-xs text-muted-foreground">
               Debouncing: a device's status gets worse only after this many bad
-              polls in a row, and better only after this many good polls in a
-              row. Set both to 1 to switch debouncing off.
+              results in a row, and better only after this many good polls in a
+              row. After a bad result the device is probed again a second
+              later, without waiting for the next poll. Set both to 1 to switch
+              debouncing off.
             </p>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -320,12 +322,13 @@ export default function AdminSettingsTab() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Probing: every cycle each device gets this many pings, this far
-              apart. From them come its packet loss and its jitter, and a
-              device at or above either threshold counts as degraded. The pings
-              have to fit in the poll interval: pings × gap + the ping timeout
-              may take up at most 80% of it. With 1 ping per cycle a device is
-              judged on reachability and latency alone, as before.
+              Probing: every cycle each device gets this many pings, sent
+              this far apart whether or not the one before was answered. From
+              them come its packet loss and its jitter, and a device at or
+              above either threshold counts as degraded. The pings have to fit
+              in the poll interval: pings × gap + the ping timeout may take up
+              at most 80% of it. With 1 ping per cycle a device is judged on
+              reachability and latency alone, as before.
             </p>
             <div className="grid grid-cols-2 gap-4">
               <div className="flex items-center gap-2 pt-6">

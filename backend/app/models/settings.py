@@ -13,7 +13,7 @@ class AppSettings(SQLModel, table=True):
     callers, so never hardcode a specific id when querying this table.
 
     The seeded defaults mirror the bootstrap values in
-    ``app.core.config.Settings`` (10s poll, 100/500ms latency thresholds).
+    ``app.core.config.Settings`` (8s poll, 100/500ms latency thresholds).
     Once seeded, subsequent startups keep whatever an admin last saved (the
     seeder is idempotent), so edits survive restarts. ``flap_threshold`` is
     the number of status changes from which the Stability page highlights a
@@ -22,7 +22,7 @@ class AppSettings(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     site_name: str = Field(default="Warehouse Network Monitor")
-    poll_interval_seconds: float = Field(default=10.0)
+    poll_interval_seconds: float = Field(default=8.0)
     latency_warn_ms: float = Field(default=100.0)
     latency_crit_ms: float = Field(default=500.0)
     flap_threshold: int = Field(default=3)
@@ -32,9 +32,9 @@ class AppSettings(SQLModel, table=True):
     failure_threshold: int = Field(default=3)
     recovery_threshold: int = Field(default=2)
     # Probing (app.services.ping_engine): how many echo requests a device gets
-    # per poll cycle and how far apart, and from how much packet loss or
-    # jitter it counts as degraded. The defaults mirror DEFAULT_PINGS_PER_CYCLE
-    # and friends there.
+    # per poll cycle and how far apart they are sent, and from how much packet
+    # loss or jitter it counts as degraded. The defaults mirror
+    # DEFAULT_PINGS_PER_CYCLE and friends there.
     pings_per_cycle: int = Field(default=4)
     ping_gap_ms: int = Field(default=200)
     loss_warn_pct: float = Field(default=20.0)

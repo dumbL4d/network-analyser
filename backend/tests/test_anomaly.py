@@ -310,7 +310,7 @@ def test_the_ewma_baseline_follows_a_slow_change():
 
 
 def test_the_ewma_detector_accepts_a_level_that_has_stayed_for_360_readings():
-    assert RELEARN_AFTER_SAMPLES == 360  # an hour, at one reading every 10 seconds
+    assert RELEARN_AFTER_SAMPLES == 360  # 48 minutes, at the default of one reading every 8 seconds
     detector = warmed_up(ewma())
     frozen = detector._baseline()
 

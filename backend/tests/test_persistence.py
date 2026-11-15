@@ -186,7 +186,7 @@ async def test_a_failed_database_write_does_not_stop_monitoring(monkeypatch):
 
     intervals = await run_cycles(2, FakePing())
 
-    assert intervals == [10.0, 10.0]  # the loop kept its rhythm
+    assert intervals == [8.0, 8.0]  # the loop kept its rhythm
     assert len(status_store.get_all()) == 11  # live status is still published
     assert len(history_store.get_history("fw-01")) == 2
 
@@ -292,6 +292,36 @@ async def test_a_real_change_after_a_restart_is_recorded_once():
 
     assert stored(TRANSITIONS, "device_id", "from_status", "to_status") == [("sw-ot", "healthy", "down")]
     assert flap_store.get_flap_counts() == {"sw-ot": 1}
+
+
+async def test_a_status_confirmed_by_a_retry_survives_a_restart():
+    ping = FakePing(default=REPLY)
+    await run_cycles(1, ping)
+    ping.outcomes[ip_of("sw-ot")] = LOST
+    await run_cycles(1, ping)  # stored: confirmed healthy, one lost poll
+    # A retry then confirms it down. That is stored as a change, without a
+    # sample, so the change is newer than the device's last sample.
+    persist_cycle([], [Transition("sw-ot", datetime.now(timezone.utc), "healthy", "down")])
+
+    restart_backend()
+
+    assert debouncer.get_states()["sw-ot"].confirmed == "down"
+    await run_cycles(1, ping)  # still silent after the restart
+    assert status_store.get_all()["sw-ot"].status == "down"
+    # Not a second outage: no new change is stored, and none is counted.
+    assert stored(TRANSITIONS, "device_id", "from_status", "to_status") == [("sw-ot", "healthy", "down")]
+    assert flap_store.get_flap_counts() == {"sw-ot": 1}
+
+
+def test_a_sample_newer_than_the_last_stored_change_is_what_counts():
+    # Down 40 s ago, and healthy again since: but the write of the cycle that
+    # confirmed the recovery failed, so that change was never stored.
+    persist_cycle([], [Transition("fw-01", ago(seconds=40), "healthy", "down")])
+    save_samples("fw-01", (ago(seconds=20), 1.0), (ago(seconds=10), 1.0))
+
+    restart_backend(NOW)
+
+    assert debouncer.get_states()["fw-01"].confirmed == "healthy"
 
 
 def test_debounce_state_is_not_restored_after_a_long_gap():

@@ -12,7 +12,7 @@ def seed_default_settings() -> None:
     """Create the singleton AppSettings row exactly once (idempotent).
 
     The row is written using the model's own field defaults, which mirror the
-    bootstrap defaults in ``app.core.config.Settings`` (poll interval 10.0s,
+    bootstrap defaults in ``app.core.config.Settings`` (poll interval 8.0s,
     latency warn/crit 100/500ms, flap threshold 3). If a row already exists,
     nothing is written -- admin edits therefore survive backend restarts.
     """

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # False -> unprivileged fallback mode (no root required).
     PING_PRIVILEGED: bool = True
     PING_TIMEOUT_SECONDS: float = 2.0
-    PING_INTERVAL_SECONDS: float = 10.0
+    PING_INTERVAL_SECONDS: float = 8.0
     LATENCY_WARN_MS: float = 100.0
     LATENCY_CRIT_MS: float = 500.0
     # False -> the app starts without the background poll loop. The test suite

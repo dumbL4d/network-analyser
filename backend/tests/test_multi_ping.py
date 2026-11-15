@@ -13,6 +13,7 @@ import pytest
 from icmplib import Host, SocketPermissionError
 from sqlmodel import Session, select
 
+from app.core.config import Settings
 from app.db.session import engine
 from app.models.settings import AppSettings
 from app.services.history_store import history_store
@@ -304,9 +305,17 @@ async def test_a_probe_that_fails_measures_nothing():
 
 
 def test_the_fallback_defaults_are_the_seeded_ones():
+    seeded = AppSettings()
+
     assert (DEFAULT_PINGS_PER_CYCLE, DEFAULT_PING_GAP_MS, DEFAULT_LOSS_WARN_PCT, DEFAULT_JITTER_WARN_MS) == (
         4, 200, 20.0, 30.0,
-    )
+    )  # fmt: skip
+    assert (seeded.pings_per_cycle, seeded.ping_gap_ms, seeded.loss_warn_pct, seeded.jitter_warn_ms) == (
+        4, 200, 20.0, 30.0,
+    )  # fmt: skip
+    # So is the poll interval's, in the .env settings (this suite pins the
+    # variable itself, so the default is read off the class).
+    assert Settings.model_fields["PING_INTERVAL_SECONDS"].default == seeded.poll_interval_seconds == 8.0
 
 
 # =============================================================================
@@ -317,7 +326,7 @@ def test_the_fallback_defaults_are_the_seeded_ones():
 @pytest.mark.parametrize(
     ("pings", "gap_ms", "timeout", "interval"),
     [
-        (4, 200, 2.0, 10.0),  # the defaults: 2.8 s of the 8 s allowed
+        (4, 200, 2.0, 8.0),  # the defaults: 2.8 s of the 6.4 s allowed
         (4, 200, 2.0, 5.0),  # the shortest poll interval: 2.8 s of 4 s
         (10, 200, 2.0, 5.0),  # exactly the 4 s allowed
         (1, 5000, 2.0, 10.0),  # 7 s of 8 s

@@ -25,11 +25,15 @@ one machine.
 
 **Monitoring**
 
-- **Probing.** Every poll cycle (10 s by default) each device gets several
-  ICMP pings (4 by default). From the replies come its latency, packet loss
-  and jitter, and a status: healthy, degraded, down or unknown.
-- **Debounced status.** A status changes only after several polls in a row
+- **Probing.** A poll cycle starts every 8 s by default, and in it each
+  device gets several ICMP pings (4 by default, 200 ms apart, none waiting
+  for the reply to the one before). From the replies come its latency,
+  packet loss and jitter, and a status: healthy, degraded, down or unknown.
+- **Debounced status.** A status changes only after several results in a row
   agree (3 to get worse, 2 to recover), so one bad poll raises nothing.
+- **Retry on suspect.** A device whose poll came out worse than its status is
+  probed again a second later instead of at the next cycle, so an outage is
+  confirmed in about 13 seconds.
 - **Live view.** The topology page updates over a Server-Sent Events stream.
   History, flap counts and incidents come over REST.
 - **A warning when the monitor itself falls behind.** The poll loop notes
@@ -146,15 +150,15 @@ flowchart LR
     POLL --> DB
     POLL --> PING
     PING -- "ICMP echo" --> SIM
-    POLL -- "raw results" --> DEB
+    POLL -- "raw results, of polls and retries" --> DEB
     POLL -- "raw readings" --> AN
     AN -. "what is unusual (no status changes)" .-> ST
     AN -- "anomaly events" --> DB
     DEB -- "confirmed status" --> ST
     DEB -- "confirmed status" --> FS
     POLL -- "raw readings" --> HS
-    POLL -- "samples + transitions, every cycle" --> DB
-    POLL -- "confirmed status, every cycle" --> TRK
+    POLL -- "samples + transitions, every cycle;<br/>transitions alone after a retry" --> DB
+    POLL -- "confirmed status, every cycle<br/>and after a retry that changed one" --> TRK
     TRK --> IA
     TRK -- "incidents + timeline" --> DB
     POLL -- "cycle completed" --> PH
@@ -495,7 +499,7 @@ are set in `infra/.env`; the others keep their defaults there. Both
 | `PING_PRIVILEGED` | `True` | | Raw ICMP sockets. `False` uses the unprivileged mode. |
 | `PING_TIMEOUT_SECONDS` | `2.0` | yes | How long one ping waits for its reply. |
 | `POLL_ENABLED` | `True` | | `False` starts the API without the poll loop (the tests do). |
-| `PING_INTERVAL_SECONDS` | `10.0` | | Fallback only, used if the settings row is missing or has not been read yet. |
+| `PING_INTERVAL_SECONDS` | `8.0` | | Fallback only, used if the settings row is missing or has not been read yet. |
 | `LATENCY_WARN_MS` | `100.0` | | Fallback only, used if the settings row is missing. |
 | `LATENCY_CRIT_MS` | `500.0` | | Fallback only, as above. |
 | `HISTORY_MAX_SAMPLES` | `36` | | Recent samples per device kept in memory. |
@@ -520,14 +524,14 @@ the start of every cycle, so a change needs no restart.
 | Setting | Default | Allowed | Meaning |
 | --- | --- | --- | --- |
 | `site_name` | `Warehouse Network Monitor` | 1 to 100 characters | Name of the site. |
-| `poll_interval_seconds` | `10` | 5 to 3600 | Pause between two poll cycles. |
+| `poll_interval_seconds` | `8` | 5 to 3600 | Time from the start of one poll cycle to the start of the next. |
 | `latency_warn_ms` | `100` | above 0, below crit | Degraded above this average latency. |
 | `latency_crit_ms` | `500` | above warn | The upper latency threshold. |
 | `flap_threshold` | `3` | 1 to 1000 | Status changes that mark a device as flapping. |
-| `failure_threshold` | `3` | 1 to 10 | Polls in a row before a worse status is confirmed. |
+| `failure_threshold` | `3` | 1 to 10 | Results in a row (a poll, then retries) before a worse status is confirmed. |
 | `recovery_threshold` | `2` | 1 to 10 | Polls in a row before a better status is confirmed. |
 | `pings_per_cycle` | `4` | 1 to 10 | Pings per device per cycle. |
-| `ping_gap_ms` | `200` | 10 to 5000 | Pause between them. |
+| `ping_gap_ms` | `200` | 10 to 5000 | Time from one of them to the next. |
 | `loss_warn_pct` | `20` | above 0, up to 100 | Degraded from this much packet loss. |
 | `jitter_warn_ms` | `30` | above 0 | Degraded from this much jitter. |
 | `anomaly_enabled` | `true` | true, false | Anomaly detection on or off. |
@@ -539,7 +543,12 @@ the start of every cycle, so a change needs no restart.
 
 `pings_per_cycle x ping_gap_ms + PING_TIMEOUT_SECONDS` has to fit in 80% of
 the poll interval; a combination that does not is rejected with the
-arithmetic in the message.
+arithmetic in the message. With the defaults that is 2.8 s of 6.4 s.
+
+These are the defaults of a new database. An existing one keeps the values it
+has stored, so its poll interval stays what it was (`10`, if it was never
+changed): change it in Admin, Settings, or start afresh with
+`make seed-reset`.
 
 ## Testing
 
@@ -625,15 +634,18 @@ Monitoring and analysis
   that reads only the status code does not notice. A cycle whose database
   write fails counts as completed: the live statuses are current then, and
   only the backend log says that the history is not being stored.
-- **Detection takes three polls.** That is the price of debouncing. With the
-  defaults an outage is confirmed after about 50 seconds, because every ping
-  to a device that does not answer waits for its timeout. A lower
-  `PING_TIMEOUT_SECONDS` shortens it.
+- **Detection takes three results in a row.** That is the price of
+  debouncing. With the defaults an outage is confirmed about 13 seconds after
+  it begins (10 to 17 in the measurements): the poll that finds the device
+  silent, then two retries, each a second after the pass before it. Each of
+  the three takes 2.6 seconds, because the last ping waits for its timeout;
+  a lower `PING_TIMEOUT_SECONDS` shortens it. A recovery is not retried: it
+  takes two polls, 10 to 16 seconds.
 - **Shared collateral is counted once per root cause.** With redundant links
   a device cut off by two failures together is listed under both, so "alerts
   suppressed" counts it twice.
 - **Anomaly detection needs a warm-up.** 30 readings per device after every
-  backend restart (about five minutes); a slowdown that begins during the
+  backend restart (four minutes); a slowdown that begins during the
   warm-up is learned as normal. It does not see a slow drift, and it was
   evaluated on synthetic traces, not on a real network.
 

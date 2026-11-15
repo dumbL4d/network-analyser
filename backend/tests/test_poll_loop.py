@@ -38,7 +38,7 @@ async def test_one_cycle_pings_every_device_and_feeds_the_three_stores():
 
     intervals = await run_cycles(1, ping)
 
-    assert intervals == [10.0]  # seeded poll interval
+    assert intervals == [8.0]  # seeded poll interval
     assert sorted(address for address, _ in ping.calls) == sorted(d.ip for d in seed_devices())
     # One call per device: the seeded 4 probes, 200 ms apart, with the timeout
     # and mode from the static settings.
@@ -202,7 +202,7 @@ async def test_settings_update_takes_effect_on_the_next_cycle(client, admin_head
 
     intervals = await run_cycles(3, ping, after_cycle)
 
-    # Cycle 1 used warn=100 (150 ms is degraded) and slept the old 10 s.
+    # Cycle 1 used warn=100 (150 ms is degraded) and slept the old 8 s.
     # From cycle 2 on, warn=200 (150 ms is healthy) and the sleep is 30 s. The
     # raw result changes at once; the confirmed status follows after the two
     # healthy polls that the default recovery threshold asks for.
@@ -211,7 +211,7 @@ async def test_settings_update_takes_effect_on_the_next_cycle(client, admin_head
         ("degraded", "healthy"),
         ("healthy", "healthy"),
     ]
-    assert intervals == [10.0, 30.0, 30.0]
+    assert intervals == [8.0, 30.0, 30.0]
 
 
 async def test_devices_are_reloaded_every_cycle(client, admin_headers):
@@ -261,7 +261,7 @@ async def test_loop_keeps_going_after_a_failed_cycle(monkeypatch):
     )
 
     assert devices_seen == [0, 11]  # cycle 1 failed, cycle 2 polled normally
-    assert intervals == [10.0, 10.0]  # the loop still slept between them
+    assert intervals == [8.0, 8.0]  # the loop still slept between them
 
 
 async def test_missing_settings_row_falls_back_to_the_defaults():

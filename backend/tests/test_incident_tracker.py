@@ -483,7 +483,7 @@ async def test_a_tracker_failure_does_not_stop_monitoring(monkeypatch):
 
     intervals = await run_cycles(2, FakePing())
 
-    assert intervals == [10.0, 10.0]
+    assert intervals == [8.0, 8.0]
     assert len(status_store.get_all()) == 11
     assert len(poll_times("fw-01")) == 2  # the samples were still stored
 

@@ -14,7 +14,7 @@ from app.schemas.settings import SettingsUpdate
 DEFAULTS = {
     "id": 1,
     "site_name": "Warehouse Network Monitor",
-    "poll_interval_seconds": 10.0,
+    "poll_interval_seconds": 8.0,
     "latency_warn_ms": 100.0,
     "latency_crit_ms": 500.0,
     "flap_threshold": 3,
@@ -160,7 +160,7 @@ def test_the_admin_settings_form_payload_is_accepted(client, admin_headers):
     "fields",
     [
         {"pings_per_cycle": 1},
-        {"pings_per_cycle": 10},  # 10 x 0.2 s + 2 s = 4 s of the 8 s a 10 s interval allows
+        {"pings_per_cycle": 10},  # 10 x 0.2 s + 2 s = 4 s of the 6.4 s an 8 s interval allows
         {"ping_gap_ms": 10},
         {"ping_gap_ms": 5000, "pings_per_cycle": 1, "poll_interval_seconds": 60},
         {"loss_warn_pct": 0.5},
@@ -214,7 +214,7 @@ def test_probes_that_do_not_fit_in_the_poll_interval_are_rejected_with_the_reaso
     assert response.json() == {
         "detail": (
             "pings_per_cycle x ping_gap_ms + the ping timeout is 9 s (10 x 700 ms + 2 s), which does not "
-            "fit comfortably inside the poll interval of 10 s: at most 8 s (80% of it). Lower "
+            "fit comfortably inside the poll interval of 8 s: at most 6.4 s (80% of it). Lower "
             "pings_per_cycle or ping_gap_ms, or raise poll_interval_seconds."
         )
     }
@@ -248,7 +248,7 @@ def test_shortening_the_poll_interval_is_rejected_when_the_probes_no_longer_fit(
 
 
 def test_the_ping_timeout_counts_towards_the_fit(client, admin_headers, monkeypatch):
-    monkeypatch.setattr(settings, "PING_TIMEOUT_SECONDS", 8.0)  # 4 x 0.2 s + 8 s = 8.8 s of 8 s
+    monkeypatch.setattr(settings, "PING_TIMEOUT_SECONDS", 8.0)  # 4 x 0.2 s + 8 s = 8.8 s of 6.4 s
 
     response = _patch(client, admin_headers, pings_per_cycle=4)
 

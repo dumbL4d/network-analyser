@@ -11,7 +11,7 @@ export interface AppSettingsOut {
   recovery_threshold: number
   /** Probing: pings sent to a device per poll cycle (1-10). */
   pings_per_cycle: number
-  /** Probing: pause between those pings, in ms. */
+  /** Probing: time from one of those pings to the next, in ms. */
   ping_gap_ms: number
   /** A device is degraded from this much packet loss (percent). */
   loss_warn_pct: number

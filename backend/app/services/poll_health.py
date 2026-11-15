@@ -18,12 +18,12 @@ STALE_AFTER_INTERVALS = 3
 def stale_after_seconds(poll_interval: float, pings: int, gap_ms: float, timeout: float) -> float:
     """How old the last completed cycle may get before the data counts as stale.
 
-    Three poll intervals, plus the longest the pings of one cycle can take: a
-    device that answers nothing makes each of its pings wait for the timeout.
-    Without that second part, a slow cycle during an outage would be reported
-    as a stalled monitor. Pure.
+    Three poll intervals, plus the longest the pings of one cycle can take:
+    they are sent ``gap_ms`` apart, and a device that answers nothing makes the
+    last one wait for the timeout. Without that second part, a slow cycle
+    during an outage would be reported as a stalled monitor. Pure.
     """
-    return STALE_AFTER_INTERVALS * poll_interval + pings * timeout + (pings - 1) * gap_ms / 1000
+    return STALE_AFTER_INTERVALS * poll_interval + (pings - 1) * gap_ms / 1000 + timeout
 
 
 class PollHealth:

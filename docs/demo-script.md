@@ -11,18 +11,19 @@ Admin tabs are **Devices**, **Links**, **Settings**, **Users**, **Chaos** and
 **Audit**.
 
 The timings were measured on the simulated network on Docker Desktop, with
-the two demo settings below (a 5-second poll interval and a 1-second ping
-timeout):
+the default monitoring settings and the one demo setting below (a 1-second
+ping timeout):
 
 | What | How long |
 | --- | --- |
 | Fault table fills after **Run** | 1 to 2 s |
-| Incident appears after **Run** | about 30 s |
-| "All monitored devices healthy" after **Restore all** | 10 to 25 s |
-| `ANOMALY` badge after **Degrade** | about 15 s |
+| Incident appears after **Run** | about 15 s, at most 25 |
+| "All monitored devices healthy" after **Restore all** | about 15 s, at most 27 |
+| `ANOMALY` badge after **Degrade** | about 20 s, at most 25 |
 
-With the defaults (a 10-second interval and a 2-second ping timeout) the
-incident takes about a minute instead.
+The backend confirms the outage after 7 to 15 seconds; the Incidents page
+asks it every 10 seconds, which is the rest. With the default 2-second ping
+timeout allow three seconds more.
 
 ## Before the audience arrives
 
@@ -44,16 +45,15 @@ Allow ten minutes.
    ```
 
 3. Open <http://localhost:8080> and sign in as `admin` / `admin123`.
-4. **Admin**, **Settings**: set "Poll interval (seconds, min 5)" to `5`, then
-   **Save settings**. The form answers "Settings updated".
-5. Rehearse once. **Admin**, **Chaos**, "OT switch failure", **Run**. Open
+4. Rehearse once. **Admin**, **Chaos**, "OT switch failure", **Run**. Open
    **Incidents** and wait for the incident. Back in **Chaos**, press
    **Restore all**, and check that **Incidents** says "All monitored devices
    healthy". This proves the chaos agent works and leaves one resolved
    incident in the history.
-6. Wait until the stack has been up for five minutes. The anomaly detectors
-   need 30 readings of every device before they judge anything.
-7. Finish on **Topology**, with all twelve device cards in view.
+5. Wait until the stack has been up for five minutes. The anomaly detectors
+   need 30 readings of every device (four minutes) before they judge
+   anything.
+6. Finish on **Topology**, with all twelve device cards in view.
 
 ## The five minutes
 
@@ -95,10 +95,11 @@ Allow ten minutes.
 
 ### 1:30 One incident, not six alerts
 
-- **Click:** **Incidents**. Keep talking: this takes about 30 seconds.
-- **Say, while waiting:** a status only changes after three polls in a row
-  agree, so that one bad poll never raises an alarm. That is the delay you
-  are watching.
+- **Click:** **Incidents**. Keep talking: this takes about 15 seconds.
+- **Say, while waiting:** a status only changes after three results in a row
+  agree, so that one bad poll never raises an alarm. A device that misses a
+  poll is asked again a second later, and once more, so the three results
+  take about seven seconds. That is the delay you are watching.
 - **Expect:** a red `6` next to **Incidents** in the header. On the
   **Active** tab one card "OT Tier Switch", `ROOT CAUSE`, `OPEN`, "Affects 5
   other devices", and five `COLLATERAL` cards. The cards at the top read
@@ -130,7 +131,7 @@ Allow ten minutes.
 - **Click:** **Admin**, **Chaos**, **Restore all**.
 - **Expect:** "No faults in place: every simulated device is running
   normally."
-- **Click:** **Incidents**, and after 10 to 25 seconds the **History** tab.
+- **Click:** **Incidents**, and after about 15 seconds the **History** tab.
 - **Expect:** **Active** says "All monitored devices healthy". **History**
   lists incident 2 as `RESOLVED`, with its duration and "5" peak affected.
 - **Say:** nobody closed it. It resolved when the switch answered two polls
@@ -144,7 +145,7 @@ Allow ten minutes.
 - **Expect:** the fault table shows "Production Server 1", `Degraded`, "40 ms
   delay, 0 ms jitter, 0% loss".
 - **Click:** **Topology**.
-- **Expect:** after about 15 seconds the card of Production Server 1 gets an
+- **Expect:** after about 20 seconds the card of Production Server 1 gets an
   `ANOMALY` badge. It stays green and `HEALTHY`. Hovering over the badge
   shows, with the figures measured at that moment, "Unusual latency: 47.1 ms,
   usually about 3.2 ms (advisory: the status is unchanged)".
@@ -161,9 +162,8 @@ Allow ten minutes.
 - **Click:** **Admin**, **Audit**.
 - **Expect:** newest first: `chaos.degrade`, `chaos.restore_all`,
   `incident.note_added`, `incident.acknowledged` and `chaos.scenario` from
-  this demo. Below them are the rehearsal's two chaos entries,
-  `settings.updated` ("poll_interval_seconds: 10 → 5") and `auth.login`. Each
-  has the user and the address.
+  this demo. Below them are the rehearsal's two chaos entries and
+  `auth.login`. Each has the user and the address.
 - **Say:** every login and every admin action is recorded.
 
 ### 4:50 Close
@@ -178,10 +178,10 @@ Allow ten minutes.
 | What you see | What to do |
 | --- | --- |
 | The Chaos tab says "Fault injection is not available." | The agent is not running. `make up CHAOS=1` starts it in about 30 seconds (it needs `CHAOS_AGENT_TOKEN` in `infra/.env`). Or carry on without it: see below. |
-| No incident a minute after **Run** | Open **Topology**. If "status updated" has stopped moving, reload the page. If the devices are `DOWN` there, wait one more poll. Otherwise look at `docker compose -f infra/docker-compose.yml logs backend --tail 20`. |
+| No incident 30 seconds after **Run** | Open **Topology**. If "status updated" has stopped moving, reload the page. If the devices are `DOWN` there, wait one more poll. Otherwise look at `docker compose -f infra/docker-compose.yml logs backend --tail 20`. |
 | The topology page is empty | Reload the page. |
 | An amber line under the header: "Monitoring has fallen behind…", "Monitoring has not completed a poll yet…" or "The backend is not answering…" | The statuses on screen are old, and the line says so. `docker compose -f infra/docker-compose.yml logs backend --tail 20` usually says why: a cycle that fails is logged with its error. `docker compose -f infra/docker-compose.yml restart backend` starts the poll loop again; the line goes away by itself within about 20 seconds. |
-| No `ANOMALY` badge after 40 seconds | The detectors were still warming up: the backend was restarted less than five minutes ago, or the slowdown began during the warm-up. Do not wait. Say so, show the results table in [anomaly-evaluation.md](anomaly-evaluation.md), and press **Restore all**. |
+| No `ANOMALY` badge after 45 seconds | The detectors were still warming up: the backend was restarted less than five minutes ago, or the slowdown began during the warm-up. Do not wait. Say so, show the results table in [anomaly-evaluation.md](anomaly-evaluation.md), and press **Restore all**. |
 | "Too many failed attempts. Try again in N seconds." at the login | Wait, or run `docker compose -f infra/docker-compose.yml restart backend`: the throttle is in memory. |
 | "Incorrect username or password" for `admin` / `admin123` | The database was created without `DEMO_MODE`. Run `make seed-reset CHAOS=1` with `DEMO_MODE=true` in `infra/.env`. |
 | The frontend loads but nothing else does | The backend did not start. `docker compose -f infra/docker-compose.yml logs backend --tail 5` says why; "Refusing to start" means `JWT_SECRET_KEY` is still a placeholder. |

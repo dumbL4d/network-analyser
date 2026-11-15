@@ -50,7 +50,7 @@ def test_health_is_public(client):
 
 def test_health_reports_the_age_of_the_last_completed_poll(client):
     completed = datetime.now(timezone.utc) - timedelta(seconds=12)
-    poll_health.cycle_completed(38.6, at=completed)
+    poll_health.cycle_completed(26.6, at=completed)
 
     body = client.get("/api/health").json()
 
@@ -60,7 +60,7 @@ def test_health_reports_the_age_of_the_last_completed_poll(client):
 
 
 def test_health_says_so_when_no_poll_has_completed_at_all(client):
-    poll_health.started(38.6, at=datetime.now(timezone.utc) - timedelta(seconds=60))
+    poll_health.started(26.6, at=datetime.now(timezone.utc) - timedelta(seconds=60))
 
     body = client.get("/api/health").json()
 
@@ -70,7 +70,7 @@ def test_health_says_so_when_no_poll_has_completed_at_all(client):
 
 
 def test_health_says_so_when_the_monitoring_has_fallen_behind(client):
-    poll_health.cycle_completed(38.6, at=datetime.now(timezone.utc) - timedelta(seconds=60))
+    poll_health.cycle_completed(26.6, at=datetime.now(timezone.utc) - timedelta(seconds=60))
 
     response = client.get("/api/health")
 

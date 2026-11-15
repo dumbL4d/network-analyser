@@ -200,6 +200,12 @@ async def run_cycles(
     been updated. ``after_cycle(k)`` (1-based) runs at that moment, so a test
     can change settings or probe outcomes "while the loop sleeps". Returns the
     interval, in seconds, that the loop asked to sleep after each cycle.
+
+    Time stands still here (the clock always says 0), so a cycle takes no time
+    and the loop sleeps the whole poll interval. And suspect devices are not
+    retried: a cycle is one probe per device, which is what these tests step
+    through. The fixed rate and the retries have their own tests, on a clock
+    that moves (tests/test_poll_timing.py).
     """
     intervals: list[float] = []
 
@@ -211,7 +217,7 @@ async def run_cycles(
             raise StopLoop
 
     try:
-        await run_poll_loop(ping=ping, sleep=fake_sleep)
+        await run_poll_loop(ping=ping, sleep=fake_sleep, clock=lambda: 0.0, retry_interval=None)
     except StopLoop:
         pass
     return intervals

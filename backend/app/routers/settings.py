@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 # Matches the original tool's documented minimum poll interval.
 MIN_POLL_INTERVAL_SECONDS = 5.0
-# The loop sleeps for the whole interval before it reads the settings again,
+# The loop waits out the interval before it reads the settings again,
 # so a huge value would stop monitoring until a restart. An hour is the cap.
 MAX_POLL_INTERVAL_SECONDS = 3600.0
 # How many status changes mark a device as flapping on the Stability page.

@@ -17,8 +17,8 @@ interface HistoryState {
  * stays mounted: every 10s for 'live' (history is pull-only; it does not
  * arrive over the SSE stream), every minute for the longer ranges.
  *
- * Known simplification: the 10s matches the default backend poll interval
- * rather than the configured one.
+ * Known simplification: the 10s is fixed. It does not follow the backend's
+ * poll interval (8 s by default), so a new sample shows up to 10 s late.
  */
 export function useDeviceHistory(deviceId: string, range: HistoryRange = 'live') {
   const key = `${deviceId}\u0000${range}`

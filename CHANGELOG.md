@@ -4,7 +4,28 @@ What each commit on the branch `feat/tech-update` added, newest first. The
 branch starts from `main` at `4df7c97`. The number of backend tests is the
 size of the suite after that commit.
 
-## feat: warn when the monitoring data is stale
+## feat: stagger pings, poll at a fixed rate and retry suspect devices
+
+- **Staggered pings.** A device's pings are sent `ping_gap_ms` apart without
+  waiting for each other's replies, so a device that does not answer costs
+  one timeout per cycle (2.6 s in all) instead of one per ping (8.6 s).
+- **Fixed-rate loop.** A cycle starts one poll interval after the cycle
+  before it started, not after it ended.
+- **Retry on suspect.** A device whose result is worse than its confirmed
+  status is probed again a second later, between two cycles. The retry
+  counts for the debouncer, the status, the transitions and the incidents.
+  No sample is stored for it, and the history and the anomaly detectors do
+  not see it. A status that a retry confirmed survives a restart: the
+  warm-up goes by a stored change that is newer than the last sample.
+- A new database polls every 8 s (was 10). An existing database keeps the
+  interval it has stored. The ping gap stays 200 ms.
+- Measured on the simulated network: an outage is confirmed after 10 to 17 s
+  (was 46 to 56 s). The stale-data limit follows the new ping timing: 26.6 s
+  with the defaults.
+- No migration, no new setting, no new dependency.
+- 1444 tests.
+
+## 538af4f feat: warn when the monitoring data is stale
 
 - The poll loop notes when each cycle completes. `GET /api/health` keeps
   `status`, `app` and `env`, and adds `last_poll_at`, `last_poll_age_seconds`

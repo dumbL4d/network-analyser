@@ -13,6 +13,7 @@ graph, p the pings per device per cycle.
 | --- | --- | --- | --- |
 | [Probe statistics and classification](#probe-statistics-and-classification) | `ping_engine.py` | O(p) per device | O(p) |
 | [Status debouncing](#status-debouncing) | `debounce.py` | O(1) per result | O(1) per device |
+| [Fixed-rate polling and retry on suspect](#fixed-rate-polling-and-retry-on-suspect) | `poll_loop.py`, `debounce.py` | O(suspects) per retry | O(N) |
 | [Root cause on a tree](#root-cause-on-a-tree) | `incident_analysis.py` | O(N), O(N²) if root causes nest | O(N) |
 | [Root cause with redundant links](#root-cause-with-redundant-links) | `incident_analysis.py` | O((V + E) · α(V)) | O(V + E) |
 | [Low-links, articulation points, bridges](#the-graph-engine) | `topology_graph.py` | O(V + E) | O(V + E) |
@@ -33,9 +34,10 @@ graph, p the pings per device per cycle.
 **Purpose.** Turn one cycle's pings into a latency, a packet loss, a jitter and a raw status.
 
 Every cycle each device gets `pings_per_cycle` echo requests (4 by default),
-`ping_gap_ms` apart (200 ms), in one call to
-`icmplib.async_ping(address, count=..., interval=...)`. All devices are probed
-at the same time. Three figures come out of a device's replies:
+`ping_gap_ms` apart (200 ms). They are staggered (`staggered_ping`): each
+request is sent on time, whether or not the one before it has been answered,
+and waits up to the ping timeout for its own reply. All devices are probed at
+the same time. Three figures come out of a device's replies:
 
 | Figure       | What it is                                                         | Example: replies of 10, 12 and 30 ms, one probe lost |
 | ------------ | ------------------------------------------------------------------ | ---------------------------------------------------- |
@@ -52,24 +54,24 @@ Settings:
 | Setting           | Default | Allowed            | Meaning                                         |
 | ----------------- | ------- | ------------------ | ----------------------------------------------- |
 | `pings_per_cycle` | `4`     | 1 – 10             | Echo requests per device per cycle              |
-| `ping_gap_ms`     | `200`   | 10 – 5000          | Pause between them                              |
+| `ping_gap_ms`     | `200`   | 10 – 5000          | Time from one of them to the next               |
 | `loss_warn_pct`   | `20`    | above 0, up to 100 | Degraded from this much packet loss             |
 | `jitter_warn_ms`  | `30`    | above 0            | Degraded from this much jitter                  |
 
 A combination is rejected, with the arithmetic in the message, unless
 `pings_per_cycle × ping_gap_ms + the ping timeout` fits in 80% of the poll
-interval. With the defaults that is 4 × 0.2 s + 2 s = 2.8 s of the 8 s that a
-10 s interval allows.
+interval. With the defaults that is 4 × 0.2 s + 2 s = 2.8 s of the 6.4 s
+that an 8 s interval allows.
 
-> **How long a cycle really takes.** That sum is the time for a device that
-> answers. icmplib sends the probes one after the other and waits up to the
-> ping timeout (`PING_TIMEOUT_SECONDS`, 2 s) for each reply, so a device that
-> does not answer at all takes `pings × timeout + (pings − 1) × gap`: 8.6 s
-> with the defaults. The poll interval is the pause between two cycles, so
-> cycles never overlap; they just come less often while a device is down
-> (measured on the simulated network: every 10.6 s normally, every 18.6 s
-> with one device down). Where that is too slow, lower `PING_TIMEOUT_SECONDS`
-> or `pings_per_cycle`.
+> **How long a cycle takes.** The last ping is sent `(pings − 1) × gap` after
+> the first: 0.6 s with the defaults, and that is what a cycle takes when
+> every device answers. A device that does not answer adds one ping timeout
+> (`PING_TIMEOUT_SECONDS`, 2 s), for that last ping: 2.6 s. The earlier pings
+> wait for their replies while the later ones are sent. Sent one after the
+> other, each waiting for its reply, the same four pings took
+> `pings × timeout + (pings − 1) × gap`, 8.6 s: that is what staggering
+> saves. The sum checked above allows one gap more than a cycle can take, so
+> it is a safe upper bound.
 
 ### Classification
 
@@ -89,7 +91,8 @@ debouncer below.
 
 **Cost.** One pass over a device's replies: O(p) for the loss, the average
 and the jitter. A cycle is O(N · p) work, but the devices are probed at the
-same time, so it takes as long as the slowest device, not the sum.
+same time, so it takes as long as the slowest device, not the sum. Staggering
+costs one short-lived socket per ping instead of one per device.
 
 **Why it is right.**
 
@@ -99,6 +102,10 @@ same time, so it takes as long as the slowest device, not the sum.
 - Jitter compares neighbouring replies, so it is only defined with two or
   more. With fewer it is left empty instead of being reported as 0, which
   would read as "perfectly steady".
+- Overlapping pings cannot be mixed up. Each request is sent with its own
+  ICMP identifier, and a reply is accepted only by the request it answers.
+  The round-trip times are listed in the order the requests were sent, not
+  the order the replies came in, which is the order jitter is defined on.
 - The classification is layered. The latency rule runs first, and loss and
   jitter can only turn `healthy` into `degraded`. With one ping per cycle the
   loss and jitter branch is skipped, so the result depends on reachability
@@ -112,8 +119,10 @@ same time, so it takes as long as the slowest device, not the sum.
 The result above is a device's **raw** status for one poll. One cycle of lost
 packets reads as a raw `degraded` or `down`, so the dashboards, the flap counter and the
 incident analysis do not use it directly. They use the **confirmed** status,
-which changes only when several polls in a row agree. The logic is a pure
-state machine in `backend/app/services/debounce.py`.
+which changes only when several results in a row agree. A result is a poll,
+or a retry of a suspect device (see
+[Fixed-rate polling and retry on suspect](#fixed-rate-polling-and-retry-on-suspect)).
+The logic is a pure state machine in `backend/app/services/debounce.py`.
 
 Statuses are ranked `healthy < degraded < down < unknown`, and three rules
 decide each device's confirmed status:
@@ -124,7 +133,7 @@ decide each device's confirmed status:
 3. **Getting better:** when the last `recovery_threshold` raw results are all
    better than the confirmed status, it becomes the worst of them.
 
-With the defaults, a device is marked `down` only after 3 polls in a row
+With the defaults, a device is marked `down` only after 3 results in a row
 without a single reply, and `healthy` again only after 2 healthy polls in a row. Moves between `healthy` and
 `degraded` follow the same two rules. A probe error (`unknown`) ranks worst, so
 it does not interrupt a run of `down` results.
@@ -132,9 +141,9 @@ it does not interrupt a run of `down` results.
 ```mermaid
 stateDiagram-v2
     direction LR
-    healthy --> degraded: F polls in a row not healthy
-    healthy --> down: F polls in a row all down
-    degraded --> down: F polls in a row all down
+    healthy --> degraded: F results in a row not healthy
+    healthy --> down: F results in a row all down
+    degraded --> down: F results in a row all down
     down --> degraded: R polls in a row not down
     degraded --> healthy: R polls in a row all healthy
     down --> healthy: R polls in a row all healthy
@@ -144,7 +153,7 @@ stateDiagram-v2
 
 | Setting              | Default | Range | Meaning                                              |
 | -------------------- | ------- | ----- | ---------------------------------------------------- |
-| `failure_threshold`  | 3       | 1–10  | polls in a row before a worse status is confirmed    |
+| `failure_threshold`  | 3       | 1–10  | results in a row before a worse status is confirmed  |
 | `recovery_threshold` | 2       | 1–10  | polls in a row before a better status is confirmed   |
 
 Both are edited in Admin → Settings (or `PATCH /api/settings`) and are re-read
@@ -160,6 +169,10 @@ Things to know:
   exception is a long gap: if a device's last stored poll is more than 10 poll
   intervals old, its next result is accepted at once.
 - A deleted device's state is dropped on the next cycle.
+- A retry is not stored, so after a restart the streak of a device counts the
+  polls only. A status that a retry confirmed is not lost: its change is
+  stored, and the warm-up takes the confirmed status from the last stored
+  change when that is newer than the last sample.
 
 **Cost.** Each device keeps its confirmed status and its last 10 raw results
 (the largest threshold allowed). A new result is compared with at most 10
@@ -178,6 +191,108 @@ history.
   both hold for the same results, so at most one rule fires.
 - *Thresholds of 1 switch it off.* Then every result is a run of length 1 and
   is confirmed at once: the raw status.
+
+## Fixed-rate polling and retry on suspect
+
+**Purpose.** Confirm a real outage in seconds, not in multiples of the poll
+interval, without letting one bad poll through.
+
+Three results in a row have to agree before a device is marked down. How long
+that takes depends on when those results come, and two rules of the poll loop
+(`backend/app/services/poll_loop.py`) decide it.
+
+**Fixed rate.** A cycle starts one poll interval after the cycle before it
+*started*. The loop notes the time, runs the cycle, and sleeps what is left of
+the interval; if the cycle took longer, the next one starts at once. So the
+interval (8 s by default) is the period of the polling. Before, the loop
+slept a whole interval after every cycle, so the period was the interval plus
+the time the pings took, and it grew just when a device stopped answering.
+
+**Retry on suspect.** A device is *suspect* when its raw result is worse than
+its confirmed status: a failure that is not confirmed yet. Nagios calls this
+a "soft" state, and re-checks at a `retry_interval` that is shorter than the
+normal check interval. Here:
+
+1. After a cycle, if any device is suspect and the next cycle is not due
+   within the retry interval (1 s, `RETRY_INTERVAL_SECONDS`), the loop waits
+   that second and pings the suspect devices again, all of them in one pass.
+2. A retry goes through the debouncer like any other result. It can confirm
+   the failure: then the status, the stored transition and the incident
+   follow at once. Or it gets an answer, and the suspicion is over.
+3. This repeats until no device is suspect or the next cycle is due. A cycle
+   that is due while a retry is still running starts as soon as it ends.
+4. A retry is left out of everything that expects one reading per cycle. No
+   sample is stored, the history charts and the reachability figure do not
+   get it, and the anomaly detectors never see it.
+
+A recovery is not retried. A device whose result is *better* than its status
+is confirmed by the next polls, as before.
+
+With the defaults a device that falls silent is confirmed down like this
+(times in seconds from the cycle that first finds it silent):
+
+| At | What happens | Failures in a row |
+| --- | --- | --- |
+| 0 | A cycle starts. The device does not answer: the pass takes 2.6 s. | |
+| 2.6 | Raw `down`, confirmed `healthy`: suspect. | 1 |
+| 3.6 | The first retry starts, 1 s later. Only this device is pinged. | |
+| 6.2 | Still silent. | 2 |
+| 7.2 | The second retry starts: the next cycle is not due before 8. | |
+| 9.8 | Still silent: confirmed `down`, incident opened. The cycle that was due at 8 starts now. | 3 |
+
+The outage began before that first cycle, and after the last ping of the
+cycle before it, which is at most 7.4 s earlier. So it is confirmed 9.8 to
+17.2 s after it begins. (An outage that begins while a cycle's pings are
+going out is the case of the next paragraph.) Measured on the simulated
+network, with a device killed at random moments: 10 to 17 s, 13 on average,
+in eight trials. Before these two rules and the staggered pings it took 46 to
+56 s.
+
+**An outage that begins inside a probe, and why the gap is short.** A probe
+that is under way when the device fails gets some replies and loses the
+rest, so it reads `degraded`. The run is then degraded, down, down: the
+debouncer confirms the mildest of the three, `degraded`, and one retry later
+the last three are all down. That is two status changes for one outage, and
+the flap ranking counts both; a recovery that begins inside a probe does the
+same in reverse and takes one poll longer. How often it happens depends on
+how long a probe lasts, which is `(pings − 1) × gap`. With the default gap of
+200 ms a probe lasts 0.6 s of every 8: it happened in 1 of 8 measured
+outages. With pings a second apart a probe lasts 3 s, and it happened in 4 of
+11. A longer gap spreads the pings over more time, and pays for it this way.
+
+**Cost.** A retry reads the device table, pings the suspect devices only and
+steps their debounce state: O(N) for the read, O(suspects) for the rest. The
+loop keeps the last reading of each device while it retries: O(N). A
+suspicion ends as soon as a result is not worse than the confirmed status, or
+the status has caught up with the results: after `failure_threshold − 1`
+retries for a device that simply stops answering, and a few more when its
+results got worse in steps. And no retry starts once the next cycle is due,
+so retries cannot crowd the cycles out.
+
+**Why it is right.**
+
+- *A retry cannot make the rule weaker.* The debouncer still needs
+  `failure_threshold` results in a row that are all worse than the confirmed
+  status. A retry is a full probe with the same pings and the same
+  classification as a poll, so each of the three is as good a witness as a
+  poll would be. Only the waiting between them is shorter.
+- *One answered retry clears the device.* A result that is not worse breaks
+  the run, exactly as a good poll does.
+- *The history stays one reading per cycle.* The history charts, the
+  reachability figure, the rollups and the anomaly detectors all assume
+  evenly spaced readings. A device in trouble would otherwise contribute
+  three readings where a healthy one contributes one, and its averages and
+  its baseline would lean towards its bad moments.
+- *An outage is still one incident.* All suspect devices are retried in the
+  same pass, so a switch and the devices behind it are confirmed together,
+  and the analysis sees the root cause and its collateral at the same time.
+  After a retry the incidents are judged on the latest reading of every
+  device, not on the retried ones alone.
+- *A retry acts on the devices as they are now.* The device table is read
+  again before every retry: a device that was deleted since the cycle is left
+  alone, and one whose address was corrected is pinged on the new address.
+- *The rate cannot drift.* Each cycle is scheduled from the start of the one
+  before it, so the time a cycle takes never adds up from cycle to cycle.
 
 ## Root cause on a tree
 
@@ -532,9 +647,9 @@ judged before a detector has seen 30 (the warm-up).
 - **EWMA freezes.** A reading above the threshold is not learned, so a spike
   cannot pull the baseline up and hide itself, and an anomaly lasts for as long
   as the readings stay above the baseline of before it began.
-- **EWMA re-learns after an hour.** On its own, freezing would report a change
+- **EWMA re-learns after 360 readings.** On its own, freezing would report a change
   that is there to stay for ever. So after 360 readings in a row above the
-  threshold (an hour at the default poll interval) the detector accepts the
+  threshold (48 minutes at the default poll interval) the detector accepts the
   new level: it forgets its baseline and warms up again on the readings that
   follow, and the anomaly ends. One reading within the threshold starts that
   count again.
@@ -557,9 +672,11 @@ judged before a detector has seen 30 (the warm-up).
 They are edited in Admin, Settings and re-read every poll cycle. Changing one
 starts every detector afresh, and ends the anomalies in progress. Detectors
 live in memory, so they also start afresh when the backend restarts (30
-readings of warm-up, about five minutes), and a device that has been deleted
+readings of warm-up, four minutes), and a device that has been deleted
 loses its detectors in the next cycle. A poll without a reply is not judged:
-a device that answers nothing is "down", which is the status's business.
+a device that answers nothing is "down", which is the status's business. A
+retry of a suspect device is not a reading: the detectors see one reading per
+device per cycle.
 
 **Does it work?** `backend/scripts/eval_anomaly.py` measures both detectors
 and a fixed threshold on synthetic traces with known anomalies. In short, from

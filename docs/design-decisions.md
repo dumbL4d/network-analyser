@@ -8,7 +8,8 @@ instead, and what it costs. How the system works is in
 ## 1. Server-Sent Events for the live status
 
 **Decision.** The backend pushes a full status snapshot to every open browser
-after each poll cycle, over Server-Sent Events (SSE). Everything else
+after each poll cycle (and after each retry of a suspect device), over
+Server-Sent Events (SSE). Everything else
 (history, incidents, statistics) is fetched with ordinary REST requests, on a
 timer where it has to stay fresh.
 
@@ -58,7 +59,7 @@ still.
 
 ## 3. Debouncing
 
-**Decision.** A device's status changes only when several polls in a row
+**Decision.** A device's status changes only when several results in a row
 agree: 3 to get worse, 2 to recover, both configurable.
 
 **Why.** ICMP packets get lost on healthy networks. Without debouncing, one
@@ -75,10 +76,9 @@ attention, while a recovery is good news that is cheap to check.
 
 **The price.**
 
-- A real outage is confirmed on the third failing poll. With the defaults that
-  is about 50 seconds, because every ping to a device that does not answer
-  waits for its timeout. A lower `PING_TIMEOUT_SECONDS` shortens it.
-- Loss that comes and goes without three bad polls in a row never becomes a
+- A real outage is confirmed on the third failing result. With the defaults
+  that is about 13 seconds: see decision 14 for what keeps it that short.
+- Loss that comes and goes without three bad results in a row never becomes a
   status. That is what the packet-loss figure, the raw history and the
   anomaly detector are for.
 
@@ -104,7 +104,7 @@ system would create the alert noise it exists to remove.
 
 **Related choices.** The default detector is EWMA: constant memory and time,
 it follows a daily rhythm, and it freezes its baseline during an anomaly so
-that a spike cannot hide itself. After an hour above the threshold it accepts
+that a spike cannot hide itself. After 360 readings above the threshold (48 minutes by default) it accepts
 the new level, so a permanent change is not flagged for ever.
 
 ## 5. Pure functions for the analysis
@@ -226,6 +226,56 @@ jitter as well as latency.
 
 **The price.** It measures reachability, not whether the service on a device
 works.
+
+## 14. A fixed polling rate, staggered pings, and retries that are not readings
+
+**Decision.** Three things decide how soon an outage is confirmed, and each
+was changed to make it sooner without weakening the rule of decision 3:
+
+- A cycle starts every poll interval (8 s), counted from the start of the
+  cycle before it, not from its end.
+- A device's pings are sent 200 ms apart without waiting for each other's
+  replies, so a silent device costs one timeout per cycle, not one per ping.
+- A device whose result is worse than its status is probed again one second
+  later, between two cycles (Nagios does the same with its "soft" states and
+  `retry_interval`). The retry is a result for the debouncer, and so for the
+  status, the transitions and the incidents that follow from it. It is not a
+  reading.
+
+**Why.** Confirming an outage took about 50 seconds: three polls, each of
+them 8.6 s of timeouts followed by a 10 s pause. None of that waiting was
+evidence. Three results in a row are the evidence, and they can be collected
+in 10 seconds as well as in 50.
+
+**Why a retry is not a reading.** The history, the rollups, the reachability
+figure and the anomaly baselines are all built on one reading per device per
+cycle. If retries were stored, a device in trouble would be measured three
+times as often as a healthy one, exactly while its readings are worst.
+
+**Instead of.**
+
+- *A shorter poll interval alone:* more load at all times, to speed up the
+  rare moment that matters.
+- *A lower failure threshold:* faster, and back to alarms from a single
+  unlucky poll.
+- *Retrying with a single quick ping:* a device that loses a quarter of its
+  pings would look healthy in most retries, which would break its run of bad
+  results and keep it from ever being confirmed as degraded. A retry is
+  therefore the same probe as a poll.
+
+**The price.** The three results now span about 10 seconds instead of 40, so
+an outage has to last that long to be confirmed, and a shorter one is no
+longer smoothed away by the waiting. A retry of a silent device can delay the
+next cycle by a second or two. Recoveries are not retried: they still take
+two polls. The retry interval is a constant in the code, not a setting.
+
+**Why the pings stay 200 ms apart.** A longer gap would sample a longer
+stretch of time, but it also makes a probe long enough to catch a device in
+the act of failing. Such a probe reads as packet loss, and the outage is
+confirmed as degraded first and as down a few seconds later: two status
+changes for one event. With pings a second apart that happened in 4 measured
+outages of 11, with 200 ms in 1 of 8 (see
+[algorithms.md](algorithms.md#fixed-rate-polling-and-retry-on-suspect)).
 
 ## What would change at a larger scale
 

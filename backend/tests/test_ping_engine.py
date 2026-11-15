@@ -5,7 +5,8 @@ import asyncio
 import pytest
 from icmplib import Host, NameLookupError, SocketPermissionError
 
-from app.services.ping_engine import classify_status, ping_all, ping_one
+from app.services import ping_engine
+from app.services.ping_engine import classify_status, ping_all, ping_one, staggered_ping
 from tests.helpers import FakePing
 
 WARN = 100.0
@@ -188,3 +189,167 @@ async def test_ping_all_with_no_devices_returns_an_empty_list():
 
     assert results == []
     assert ping.calls == []
+
+
+# --- staggered pings: the real probe -----------------------------------------------
+#
+# ``staggered_ping`` sends each echo request with one ``icmplib.async_ping``
+# call. These tests replace that call, so no packet is sent, and none of them
+# depends on how long anything takes.
+
+
+class NoWaiting:
+    """``asyncio`` as the ping engine sees it, with a ``sleep`` that takes no
+    time and notes what it was asked for."""
+
+    def __init__(self) -> None:
+        self.sleeps: list[float] = []
+
+    async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
+        await asyncio.sleep(0)
+
+    def __getattr__(self, name: str):
+        return getattr(asyncio, name)
+
+
+async def test_staggered_ping_sends_every_request_on_time_without_waiting_for_a_reply(monkeypatch):
+    clock = NoWaiting()
+    requests: list[dict] = []
+    all_sent = asyncio.Event()
+
+    async def one_request(address: str, **kwargs) -> Host:
+        requests.append(kwargs)
+        if len(requests) == 4:
+            all_sent.set()
+        # No request is answered before the last one is out. Sent one after
+        # the other, each waiting for its reply, the first would wait for ever.
+        await all_sent.wait()
+        return Host(address, 1, [1.0])
+
+    monkeypatch.setattr(ping_engine, "asyncio", clock)
+    monkeypatch.setattr(ping_engine, "async_ping", one_request)
+
+    host = await asyncio.wait_for(
+        staggered_ping("10.0.0.1", count=4, interval=0.5, timeout=1.5, privileged=False), timeout=5
+    )
+
+    assert (host.packets_sent, host.rtts) == (4, [1.0, 1.0, 1.0, 1.0])
+    # Each request waits for its own turn, a gap after the one before it...
+    assert clock.sleeps == [0.0, 0.5, 1.0, 1.5]
+    # ...and is one ping with the whole timeout to itself.
+    assert requests == [{"count": 1, "timeout": 1.5, "privileged": False}] * 4
+
+
+async def test_staggered_ping_lists_the_replies_in_the_order_the_requests_were_sent(monkeypatch):
+    # (how long the reply takes, what icmplib reports): the first request is
+    # answered last, the second not at all, and the fourth could not be sent.
+    replies = iter([(0.03, (1, [30.0])), (0.0, (1, [])), (0.0, (1, [10.0])), (0.0, (0, []))])
+
+    async def one_request(address: str, **kwargs) -> Host:
+        delay, (sent, rtts) = next(replies)
+        await asyncio.sleep(delay)
+        return Host(address, sent, rtts)
+
+    monkeypatch.setattr(ping_engine, "async_ping", one_request)
+
+    host = await staggered_ping("10.0.0.1", count=4, interval=0.001)
+
+    # Sending order, which is what the jitter compares: |10 - 30|, not 0. And
+    # the loss is counted against the three requests that went out.
+    assert (host.address, host.packets_sent, host.rtts) == ("10.0.0.1", 3, [30.0, 10.0])
+    assert host.is_alive
+
+
+async def test_staggered_ping_with_one_request_is_one_plain_ping(monkeypatch):
+    calls = []
+
+    async def one_request(address: str, **kwargs) -> Host:
+        calls.append((address, kwargs))
+        return Host(address, 1, [])
+
+    monkeypatch.setattr(ping_engine, "async_ping", one_request)
+
+    # A gap of an hour: with a single request there is none to wait for.
+    host = await asyncio.wait_for(
+        staggered_ping("10.0.0.1", count=1, interval=3600.0, timeout=1.5, privileged=True), timeout=5
+    )
+
+    assert calls == [("10.0.0.1", {"count": 1, "timeout": 1.5, "privileged": True})]
+    assert (host.packets_sent, host.rtts, host.is_alive) == (1, [], False)
+
+
+async def test_staggered_ping_passes_a_probe_error_on_and_sends_nothing_more(monkeypatch):
+    sent = []
+
+    async def one_request(address: str, **kwargs) -> Host:
+        sent.append(address)
+        raise SocketPermissionError(privileged=True)
+
+    monkeypatch.setattr(ping_engine, "async_ping", one_request)
+
+    with pytest.raises(SocketPermissionError):
+        await staggered_ping("10.0.0.1", count=3, interval=0.01)
+
+    # The two requests that were still waiting for their turn are dropped:
+    # well after they were due, only the first has been sent.
+    await asyncio.sleep(0.05)
+    assert sent == ["10.0.0.1"]
+
+
+async def test_staggered_ping_looks_a_host_name_up_once_for_the_whole_probe(monkeypatch):
+    lookups = []
+    sent = []
+
+    async def resolve(name: str) -> list[str]:
+        lookups.append(name)
+        return ["10.0.0.9", "10.0.0.10"]
+
+    async def one_request(address: str, **kwargs) -> Host:
+        sent.append(address)
+        return Host(address, 1, [2.0])
+
+    monkeypatch.setattr(ping_engine, "async_resolve", resolve)
+    monkeypatch.setattr(ping_engine, "async_ping", one_request)
+
+    host = await staggered_ping("plc-1.plant.example", count=3, interval=0.001)
+
+    assert lookups == ["plc-1.plant.example"]
+    assert sent == ["10.0.0.9"] * 3  # every request goes to the same address
+    assert (host.address, host.packets_sent) == ("10.0.0.9", 3)
+
+
+async def test_staggered_ping_sends_nothing_to_a_name_that_does_not_resolve(monkeypatch):
+    sent = []
+
+    async def resolve(name: str) -> list[str]:
+        raise NameLookupError(name)
+
+    async def one_request(address: str, **kwargs) -> Host:
+        sent.append(address)
+        return Host(address, 1, [2.0])
+
+    monkeypatch.setattr(ping_engine, "async_resolve", resolve)
+    monkeypatch.setattr(ping_engine, "async_ping", one_request)
+
+    with pytest.raises(NameLookupError):
+        await staggered_ping("not-a-host.example", count=3, interval=0.001)
+
+    assert sent == []
+
+
+async def test_the_staggered_ping_is_the_probe_when_none_is_injected(monkeypatch):
+    requests = []
+
+    async def one_request(address: str, **kwargs) -> Host:
+        requests.append((address, kwargs))
+        return Host(address, 1, [12.0])
+
+    monkeypatch.setattr(ping_engine, "async_ping", one_request)
+
+    (status,) = await ping_all(
+        [("dev-1", "10.0.0.1")], 2.0, True, WARN, CRIT, pings=3, gap_seconds=0.001
+    )
+
+    assert requests == [("10.0.0.1", {"count": 1, "timeout": 2.0, "privileged": True})] * 3
+    assert (status.status, status.latency_ms, status.loss_pct) == ("healthy", 12.0, 0.0)

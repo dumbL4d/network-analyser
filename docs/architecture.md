@@ -90,7 +90,7 @@ flowchart TD
     A["Startup: migrate DB (alembic upgrade head),<br/>seed devices / users / settings"] --> B["Start poll loop task"]
     B --> C["Read AppSettings row from DB<br/>(poll interval, pings per cycle, thresholds)"]
     C --> D["Load devices (id, ip) from Device table"]
-    D --> E["ping_all()<br/>all devices at once, several pings each (icmplib)"]
+    D --> E["ping_all()<br/>all devices at once, several pings each,<br/>sent a gap apart without waiting for replies"]
     E --> F["classify_probes() per device: the RAW result<br/>healthy / degraded / down / unknown<br/>from latency, packet loss and jitter"]
     F --> N["anomaly_registry.observe()<br/>marks unusual latency or loss on a reading<br/>(advisory: no status changes)"]
     N --> K["debouncer.apply()<br/>raw results in, CONFIRMED status out"]
@@ -100,9 +100,10 @@ flowchart TD
     I --> P["persist_cycle() in a worker thread<br/>samples + transitions + anomaly events, one transaction"]
     P --> T["incident_tracker.track() in a worker thread<br/>open / update / resolve stored incidents"]
     T --> Q["poll_health.cycle_completed()<br/>notes when the cycle finished"]
-    Q --> J["asyncio.sleep(interval)"]
-    G --> J
-    H --> J
+    Q --> S{"A device suspect<br/>(raw result worse than its status)<br/>and the next cycle not due?"}
+    S -- "yes: 1 s later" --> R["Retry: ping the suspect devices only<br/>debouncer, status, flaps, transitions, incidents<br/>NO sample, history or anomaly detector"]
+    R --> S
+    S -- "no" --> J["Sleep what is left of the poll interval,<br/>counted from the START of this cycle"]
     J --> C
 ```
 
@@ -111,6 +112,21 @@ singleton at the **start of every cycle**, so an admin editing the poll
 interval, the probe settings, the latency, loss and jitter thresholds or the
 debounce thresholds in the UI takes effect within one cycle — no backend
 restart required.
+
+The loop runs at a **fixed rate**: a cycle starts one poll interval (8 s by
+default) after the cycle before it started, however long that one took. If a
+cycle takes longer than the interval, the next one starts as it ends.
+
+Between two cycles the loop **retries suspect devices**: those whose latest
+result is worse than their confirmed status. One second after a pass they are
+pinged again, in one pass, and the result goes through the debouncer, so a
+failure is confirmed without waiting for the next cycles. A retry can change
+a status, and then the transition is stored and the incidents are updated at
+once. It is not a reading: no sample is stored, and the history store and the
+anomaly detectors do not see it. Before each retry the loop reads the devices
+again, so one that was deleted is left alone and one whose address was
+corrected is pinged on the new one. The rule, a timeline and the reasons are in
+[Fixed-rate polling and retry on suspect](algorithms.md#fixed-rate-polling-and-retry-on-suspect).
 
 Setting `POLL_ENABLED=False` starts the API without the background tasks (the
 test suite does this). Nothing is pinged, so every device stays `unknown`, and
@@ -144,11 +160,12 @@ no login, reports it:
 - `poll_stale` is true when the wait for a completed cycle has lasted longer
   than
 
-  `3 × poll interval + pings per cycle × ping timeout + (pings per cycle − 1) × ping gap`
+  `3 × poll interval + (pings per cycle − 1) × ping gap + ping timeout`
 
   That is three poll intervals, plus the longest the pings of one cycle can
-  take: a device that does not answer makes every ping wait for its timeout.
-  With the default settings it is 3 × 10 + 4 × 2 + 3 × 0.2 = 38.6 seconds.
+  take: they are sent a gap apart, and a device that does not answer makes
+  the last one wait for its timeout.
+  With the default settings it is 3 × 8 + 3 × 0.2 + 2 = 26.6 seconds.
   Without the second part, a cycle that is slow because devices are down
   would count against the monitor. The wait is counted from the last
   completed cycle, or from the start of the loop while there is none. The
@@ -198,13 +215,14 @@ the confirmed status plus the raw details. This one has just missed a poll:
 }
 ```
 
-- `status` is the confirmed status; `raw_status` is the latest poll's result.
-- `latency_ms` and `timestamp` belong to the latest poll. `latency_ms` is the
+- `status` is the confirmed status; `raw_status` is the latest result: of a
+  poll, or of the retry of a suspect device.
+- `latency_ms` and `timestamp` belong to that same result. `latency_ms` is the
   average of its probes; `latency_min_ms` and `latency_max_ms` are the fastest
   and the slowest reply, `loss_pct` the share of probes without one, and
   `jitter_ms` the jitter (see [Probe statistics and classification](algorithms.md#probe-statistics-and-classification)).
-- `consecutive_failures` / `consecutive_successes` count the polls in a row
-  that were not healthy / were healthy.
+- `consecutive_failures` / `consecutive_successes` count the results in a row
+  (polls and retries) that were not healthy / were healthy.
 - `anomaly` is advisory: `null`, or what the anomaly detector finds unusual,
   per metric, for example
   `{"latency": {"value": 60.5, "expected": 10.5, "score": 50.0, "since": "..."}}`
@@ -216,7 +234,8 @@ The incident analysis (see [algorithms.md](algorithms.md#root-cause-on-a-tree))
 is stateless: it answers "what is wrong right now?" and
 remembers nothing. The **incident tracker**
 (`backend/app/services/incident_tracker.py`) adds the memory. The poll loop
-calls it after every cycle (never per HTTP request). It runs the same
+calls it after every cycle, and after a retry that changed a status (never
+per HTTP request). It runs the same
 analysis, compares the result with the unresolved incidents in the database,
 and stores what changed. There is one incident per outage, keyed by its
 root-cause device.
@@ -280,10 +299,11 @@ admin actions; everything else is logged by the tracker.
 | `mttr_seconds`                 | mean of `resolved_at - opened_at`, resolved incidents only   |
 | `alerts_suppressed`            | sum of each incident's peak number of collateral devices     |
 
-With the default thresholds a failure is confirmed on the third failing poll,
-so the detection delay is two poll cycles. A cycle takes longer than the poll
-interval while a device does not answer, because each of its pings waits for
-the timeout: about 37 s with the defaults.
+With the default thresholds a failure is confirmed on the third failing
+result: the poll that finds the device silent, and two retries, each a second
+after the pass before it. The detection delay runs from the first of those to
+the third: about 7 s with the defaults (it was about 37 s when a device that
+did not answer was only looked at again in the next two cycles).
 
 **Availability** (`GET /api/stats/availability?window=24h|7d|30d`) is computed
 from `status_transition`. For each device it rebuilds the status over the
@@ -414,7 +434,7 @@ different: a link is deleted together with either of its two devices.
 
 ```mermaid
 flowchart LR
-    POLL["Poll cycle<br/>(every ~10 s)"] -- "one transaction,<br/>in a worker thread" --> RAW[("latency_sample<br/>raw, kept 24 h")]
+    POLL["Poll cycle<br/>(every 8 s)"] -- "one transaction,<br/>in a worker thread" --> RAW[("latency_sample<br/>raw, kept 24 h")]
     POLL -- "same transaction" --> TR[("status_transition<br/>kept 30 days")]
     RAW -- "retention job, hourly:<br/>roll up, then delete" --> ROLL[("latency_rollup_1m<br/>kept 30 days")]
     ROLL -- "older than 30 days" --> GONE["deleted"]
@@ -425,7 +445,8 @@ flowchart LR
 
 1. **Write.** After every poll cycle the loop stores one `latency_sample` per
    device, plus a `status_transition` for each confirmed status change, in a
-   single transaction. The write runs in a worker thread
+   single transaction. A retry that confirms a change stores that transition
+   alone, without a sample. The write runs in a worker thread
    (`asyncio.to_thread`), so it never blocks the event loop. If it fails, the
    error is logged and live monitoring carries on.
 2. **Warm-up.** At startup the in-memory caches are refilled from the
@@ -453,8 +474,9 @@ How long each kind of data is kept is set by environment variables
 (`RAW_RETENTION_HOURS`, `ROLLUP_RETENTION_DAYS`, `TRANSITION_RETENTION_DAYS`,
 `RETENTION_INTERVAL_SECONDS`, `HISTORY_MAX_SAMPLES`): see
 [Configuration](../README.md#configuration). With the defaults and 12 devices
-polled every 10 s, the database settles at roughly 104,000 raw rows and
-518,000 rollup rows.
+polled every 8 s, the database settles at roughly 130,000 raw rows and
+518,000 rollup rows. Retries add none: only a status change they confirm is
+stored, as a transition.
 
 ### Reading history
 
@@ -708,8 +730,8 @@ The simulated devices do not really depend on each other: each container
 answers pings by itself, so stopping a switch does not take the devices behind
 it down. To see what a failure WOULD cut off, use the What-if panel on the
 Topology page. What stopping containers by hand can show is how the
-redundancy changes the incident analysis. Wait about a minute after each step
-(three polls confirm a failure):
+redundancy changes the incident analysis. Wait about 20 seconds after each
+step (three results in a row confirm a failure):
 
 ```sh
 # sw-ot is still reachable through sw-edge-2, so its failure is its own:

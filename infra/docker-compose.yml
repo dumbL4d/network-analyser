@@ -163,8 +163,8 @@ services:
       # How long a login lasts, in minutes.
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
       # How long one ping waits for its reply, in seconds. A device that does
-      # not answer costs this once per ping of a cycle (see "Probe statistics
-      # and classification" in ../docs/algorithms.md).
+      # not answer costs this once per cycle, after its last ping (see "Probe
+      # statistics and classification" in ../docs/algorithms.md).
       PING_TIMEOUT_SECONDS: ${PING_TIMEOUT_SECONDS:-2.0}
       # Data retention (see "Data persistence and retention" in
       # ../docs/architecture.md).

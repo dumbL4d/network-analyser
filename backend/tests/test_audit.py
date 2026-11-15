@@ -189,7 +189,7 @@ def test_a_settings_change_is_recorded_with_the_old_and_the_new_values(client, a
             {
                 "changes": {
                     "site_name": {"from": "Warehouse Network Monitor", "to": "Plant 2"},
-                    "poll_interval_seconds": {"from": 10.0, "to": 30.0},
+                    "poll_interval_seconds": {"from": 8.0, "to": 30.0},
                 }
             },
         )

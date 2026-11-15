@@ -33,8 +33,9 @@ Several probes per cycle
 ========================
 
 A device is sent ``pings`` echo requests per poll cycle (``pings_per_cycle`` in
-the settings), ``gap_seconds`` apart, with one call to
-``icmplib.async_ping(address, count=..., interval=...)``. From the replies:
+the settings), ``gap_seconds`` apart (``ping_gap_ms``), by
+:func:`staggered_ping`: each request is sent on time, whether or not the one
+before it has been answered. From the replies:
 
 * ``latency_ms``: the average round-trip time (with its minimum and maximum);
 * ``loss_pct``: the share of the probes that got no reply;
@@ -51,7 +52,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from icmplib import async_ping
+from icmplib import Host, async_ping, async_resolve, is_hostname
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -225,6 +226,52 @@ def probe_budget_problem(
     )
 
 
+async def staggered_ping(
+    address: str,
+    count: int = 1,
+    interval: float = DEFAULT_PING_GAP_MS / 1000,
+    timeout: float = 2.0,
+    privileged: bool = True,
+) -> Host:
+    """Send ``count`` echo requests ``interval`` seconds apart. Called like
+    ``icmplib.async_ping`` and returns the same ``Host``.
+
+    The difference is in the waiting. ``icmplib.async_ping`` sends a request
+    only once the one before it was answered or timed out, so a device that
+    answers nothing took ``count x timeout``. Here every request is sent on
+    time and waits for its own reply, so the waits overlap and such a device
+    takes ``(count - 1) x interval + timeout``: 2.6 s instead of 8.6 s with 4
+    pings 200 ms apart and a 2 s timeout. That is what lets an outage be
+    confirmed sooner.
+    A device that answers takes ``(count - 1) x interval`` plus one round
+    trip, as before.
+    """
+
+    # One lookup for the whole probe, as icmplib does it for a single call:
+    # not one per request, of which some could then fail and some not.
+    if is_hostname(address):
+        address = (await async_resolve(address))[0]
+
+    async def probe(number: int) -> Host:
+        await asyncio.sleep(number * interval)
+        return await async_ping(address, count=1, timeout=timeout, privileged=privileged)
+
+    requests = [asyncio.ensure_future(probe(number)) for number in range(count)]
+    try:
+        probes = await asyncio.gather(*requests)
+    finally:
+        # One request failed (no permission, an unknown host): the ones that
+        # are still waiting for their turn would only fail the same way.
+        for request in requests:
+            request.cancel()
+    # In the order they were sent: the jitter compares consecutive replies.
+    return Host(
+        address,
+        sum(host.packets_sent for host in probes),
+        [rtt for host in probes for rtt in host.rtts],
+    )
+
+
 async def ping_one(
     ip: str,
     device_id: str,
@@ -232,7 +279,7 @@ async def ping_one(
     privileged: bool,
     warn_threshold: float,
     crit_threshold: float,
-    ping: PingFn = async_ping,
+    ping: PingFn = staggered_ping,
     *,
     pings: int = 1,
     gap_seconds: float = DEFAULT_PING_GAP_MS / 1000,
@@ -312,7 +359,7 @@ async def ping_all(
     privileged: bool,
     warn_threshold: float,
     crit_threshold: float,
-    ping: PingFn = async_ping,
+    ping: PingFn = staggered_ping,
     *,
     pings: int = 1,
     gap_seconds: float = DEFAULT_PING_GAP_MS / 1000,

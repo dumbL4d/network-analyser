@@ -46,11 +46,11 @@ export interface DeviceStatusDTO {
   status: DeviceStatus
   latency_ms: number | null
   timestamp: string
-  /** The latest poll's raw result, before debouncing. */
+  /** The latest raw result, before debouncing: of a poll, or of a retry. */
   raw_status: DeviceStatus
-  /** Polls in a row whose raw result was not healthy. */
+  /** Results in a row (polls and retries) whose raw result was not healthy. */
   consecutive_failures: number
-  /** Polls in a row whose raw result was healthy. */
+  /** Results in a row (polls and retries) whose raw result was healthy. */
   consecutive_successes: number
   /**
    * The probes of the latest poll cycle. `latency_ms` above is their average
