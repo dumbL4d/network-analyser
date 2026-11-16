@@ -6,7 +6,12 @@ class Settings(BaseSettings):
 
     APP_NAME: str = "Network Analyser API"
     APP_ENV: str = "development"
-    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+    # Both spellings of the Vite dev origin: a browser treats `localhost` and
+    # `127.0.0.1` as DIFFERENT origins, so both must be allowed.
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
     DATABASE_PATH: str = "./data/network_analyser.db"
     # Optional absolute/relative path to the devices seed JSON. When unset,
     # main.py falls back to the repo-root layout (local dev) or ./infra next to

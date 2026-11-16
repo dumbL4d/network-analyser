@@ -39,10 +39,10 @@ flowchart LR
     end
 
     subgraph FrontendContainer["frontend container (nginx)"]
-        STATIC["Static bundle<br/>served on :8080"]
+        STATIC["Static bundle<br/>served on :8411"]
     end
 
-    subgraph BackendContainer["backend container (FastAPI + uvicorn :8000)"]
+    subgraph BackendContainer["backend container (FastAPI + uvicorn :8410)"]
         API["REST /api/* routers"]
         SSE["SSE /api/stream/status"]
         POLL["Poll loop<br/>(background task)"]
@@ -58,7 +58,7 @@ flowchart LR
         SIM["11 × sim-* containers<br/>(Alpine ICMP stubs)"]
     end
 
-    UI -- "browser calls :8000 directly" --> PING
+    UI -- "browser calls :8410 directly" --> PING
     API --> DB
     API --> ST
     API --> HS
@@ -292,28 +292,28 @@ flowchart LR
         S8["sim-ap-aisle-1 · .30"]
         S9["sim-ap-aisle-2 · .31"]
         S10["sim-scanner-1 · .40"]
-        BE["backend · 10.99.0.99<br/>:8000 · cap NET_RAW"]
+        BE["backend · 10.99.0.99<br/>:8410 · cap NET_RAW"]
     end
 
     BR["Browser"]
-    FE["frontend (nginx) · :8080<br/>no network — serves static bundle"]
+    FE["frontend (nginx) · :8411<br/>no network — serves static bundle"]
 
     BE -- "ICMP probes (all 11 sim-* stubs)" --> FW
     BE -- "ICMP" --> S2
     BE -- "ICMP" --> S3
     BE -- "ICMP" --> S6
     BE -- "ICMP" --> S9
-    BR -- "API + SSE :8000" --> BE
-    BR -- "GET bundle :8080" --> FE
+    BR -- "API + SSE :8410" --> BE
+    BR -- "GET bundle :8411" --> FE
     FE -.->|"no direct traffic<br/>(out-of-band)"| BE
 ```
 
 - **11 `sim-*` containers** — Alpine stubs that answer ICMP, standing in for
   warehouse hardware.
 - **`backend`** — FastAPI + SQLite; needs `CAP_NET_RAW` for raw ICMP sockets,
-  publishes `:8000`, persists the DB in the `backend-data` named volume, and
+  publishes `:8410`, persists the DB in the `backend-data` named volume, and
   mounts `infra/devices.seed.json` read-only as the topology source.
-- **`frontend`** — nginx serving the built SPA on `:8080`. It is deliberately
+- **`frontend`** — nginx serving the built SPA on `:8411`. It is deliberately
   not on `warehouse-net`: it never talks to the backend itself (the browser
   does), so attaching it adds nothing.
 - **13 containers total** when running (11 sims + backend + frontend).
@@ -338,7 +338,7 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # set JWT_SECRET_KEY / CORS_ORIGINS / thresholds
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8410
 ```
 
 Requires `CAP_NET_RAW` (or root) for privileged raw-ICMP pings. For
@@ -352,7 +352,7 @@ for platform caveats). Seeded logins default to `admin` / `admin123` and
 ```sh
 cd frontend
 npm install
-cp .env.example .env   # VITE_API_BASE_URL defaults to http://localhost:8000
+cp .env.example .env   # VITE_API_BASE_URL defaults to http://localhost:8410
 npm run dev            # Vite dev server on :5173
 ```
 

@@ -20,7 +20,7 @@ import type {
 // local `npm run dev` workflow from every earlier ticket working unchanged.
 // See frontend/.env.example for deployment guidance.
 export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8410'
 
 export const TOKEN_STORAGE_KEY = 'na_token'
 

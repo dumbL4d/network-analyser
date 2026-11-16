@@ -29,9 +29,9 @@ together on one bridge network (`warehouse-net`).
 
 3. Set `FRONTEND_API_BASE_URL` in `infra/.env` to where the backend is
    reachable **from the end user's browser**:
-   - local testing: leave the default `http://localhost:8000`;
+   - local testing: leave the default `http://localhost:8410`;
    - real deployment: the server's LAN-reachable host/port
-     (e.g. `http://10.0.0.50:8000`). This is baked into the frontend at image
+     (e.g. `http://10.0.0.50:8410`). This is baked into the frontend at image
      build time, so changing it afterwards requires `up -d --build`.
 
    `infra/.env` is git-ignored; never commit it.
@@ -43,13 +43,13 @@ docker compose -f infra/docker-compose.yml up -d --build
 ```
 
 This brings up **13 containers**: 11 `sim-*` Alpine stubs standing in for
-warehouse hardware, the backend (FastAPI + SQLite on port 8000), and the
-frontend (nginx static SPA on port 8080).
+warehouse hardware, the backend (FastAPI + SQLite on port 8410), and the
+frontend (nginx static SPA on port 8411).
 
 ## Access
 
-- Frontend UI: <http://localhost:8080> (or the deployment's actual address)
-- Backend API: <http://localhost:8000>/api/... (`/api/health` for a smoke check)
+- Frontend UI: <http://localhost:8411> (or the deployment's actual address)
+- Backend API: <http://localhost:8410>/api/... (`/api/health` for a smoke check)
 
 Default seeded logins:
 
