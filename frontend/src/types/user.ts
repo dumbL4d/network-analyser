@@ -1,4 +1,4 @@
-/** Mirrors the backend user-management schemas (Ticket 4.3). */
+/** Mirrors the backend user-management schemas. */
 export type UserRole = 'admin' | 'viewer'
 
 export interface UserOut {

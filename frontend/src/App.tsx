@@ -4,11 +4,13 @@ import AccountPage from '@/components/AccountPage'
 import AdminPanel from '@/components/admin/AdminPanel'
 import AdminRoute from '@/components/AdminRoute'
 import DeviceDetailView from '@/components/DeviceDetailView'
+import IncidentDetailView from '@/components/IncidentDetailView'
 import IncidentView from '@/components/IncidentView'
 import LoginPage from '@/components/LoginPage'
 import MetricsView from '@/components/MetricsView'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import StabilityView from '@/components/StabilityView'
+import StaleDataBanner from '@/components/StaleDataBanner'
 import TopologyView from '@/components/TopologyView'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/contexts/AuthContext'
@@ -30,6 +32,12 @@ function AppHeader() {
         <h1 className="text-lg font-semibold tracking-tight">Network Analyser</h1>
         {isAuthenticated && (
           <nav className="flex items-center gap-1">
+            <Link
+              to="/"
+              className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Topology
+            </Link>
             <Link
               to="/metrics"
               className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
@@ -94,7 +102,10 @@ function AppLayout() {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <AppHeader />
-      <main className="flex-1">
+      <StaleDataBanner />
+      {/* relative: the topology page fills exactly what the header and the
+          warning above leave of the window. */}
+      <main className="relative flex-1">
         <Outlet />
       </main>
     </div>
@@ -159,6 +170,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <IncidentView />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/incidents/:incidentId"
+          element={
+            <ProtectedRoute>
+              <IncidentDetailView />
             </ProtectedRoute>
           }
         />

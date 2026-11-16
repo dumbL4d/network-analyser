@@ -1,36 +1,95 @@
 # Network Analyser
 
-Real-time monitoring, stability analysis, and root-cause incident detection for
-industrial / OT networks. The system pings every device in a warehouse network
-over ICMP, classifies its health (healthy / degraded / down / unknown), streams
-live status to a web dashboard over SSE, and automatically separates **root
-causes** from **collateral damage** whenever something goes offline.
+A network monitor for industrial (OT) sites that tells the operator **which
+device actually failed**, instead of raising an alarm for every device behind
+it.
 
-Built as three layers: a FastAPI backend that owns all monitoring logic, a
-React SPA that visualizes it, and a Docker Compose stack that simulates an
-entire warehouse LAN so the whole system runs on one machine.
+**The problem: alert storms.** In a plant network one switch sits in front of
+many machines. When it fails, every PLC, HMI and scanner behind it stops
+answering too, and a monitor that only pings devices raises an alert for each
+of them. The one alert that matters is somewhere in the pile.
 
-## Overview
+**The solution: topology-aware root-cause analysis.** Network Analyser knows
+how the devices are connected, redundant links included. When devices stop
+answering, it works out which of them the network can still reach: those are
+the **root causes**. Everything that is only unreachable because of them is
+**collateral**. One outage becomes one incident, with the devices it took
+down, the number of alerts it replaced, and a step-by-step playbook.
 
-- **ICMP monitoring** — an async `icmplib` ping engine probes every device on a
-  configurable interval (~10 s default) and classifies each one.
-- **Live dashboards** — a Server-Sent Events (SSE) stream pushes full status
-  snapshots to every connected browser; latency history, flap counts, and
-  incident lists come on top via REST.
-- **Tree-based incident analysis** — devices are stored as a parent/child tree
-  (firewall → switches → PLCs/HMIs/servers). An unhealthy device whose parent
-  is also unhealthy is marked **collateral**; one whose parent is healthy is a
-  **root cause** with the list of downstream devices it took down.
-- **Guided-fix playbooks** — each incident links to a static, device-type +
-  status-specific troubleshooting playbook.
-- **Role-based access** — JWT login with `admin` / `viewer` roles; device CRUD,
-  user management, monitoring settings, and users' password changes all live
-  behind the appropriate role check.
-- **Simulated hardware** — Docker Compose brings up 11 Alpine containers that
-  stand in for firewall/switch/PLC/HMI/AP/scanner hardware, so the entire
-  lifecycle (dev, demo, testing) works without touching real devices.
+It has three parts: a FastAPI backend that does the monitoring and the
+analysis, a React single-page app that shows it live, and a Docker Compose
+stack that simulates a small warehouse network, so that everything runs on
+one machine.
 
-## System architecture
+## What it does
+
+**Monitoring**
+
+- **Probing.** A poll cycle starts every 8 s by default, and in it each
+  device gets several ICMP pings (4 by default, 200 ms apart, none waiting
+  for the reply to the one before). From the replies come its latency,
+  packet loss and jitter, and a status: healthy, degraded, down or unknown.
+- **Debounced status.** A status changes only after several results in a row
+  agree (3 to get worse, 2 to recover), so one bad poll raises nothing.
+- **Retry on suspect.** A device whose poll came out worse than its status is
+  probed again a second later instead of at the next cycle, so an outage is
+  confirmed in about 13 seconds.
+- **Live view.** The topology page updates over a Server-Sent Events stream.
+  History, flap counts and incidents come over REST.
+- **A warning when the monitor itself falls behind.** The poll loop notes
+  when each cycle completes. If none has for about three poll intervals,
+  every page behind the login says that its statuses may be out of date, and
+  `/api/health` reports how old the last poll is
+  ([how it is decided](docs/architecture.md#is-the-data-fresh)).
+- **History that survives restarts.** Every poll is stored in SQLite: raw for
+  a day, then as 1-minute rollups for 30 days. Charts cover the last hour up
+  to the last 30 days.
+- **Metrics and stability pages.** Per device: a latency chart with the
+  median and the share of polls that got a reply, a packet-loss and jitter
+  table, and a status overview. A ranking of the devices by status changes
+  (flaps), with those at or above a threshold highlighted, and an
+  availability table.
+- **Anomaly detection, advisory.** Each device's latency and packet loss are
+  compared with that device's own learned baseline (EWMA or rolling z-score).
+  An unusual reading gets a badge and a chart marker. It never changes a
+  status or opens an incident. Measured results:
+  [docs/anomaly-evaluation.md](docs/anomaly-evaluation.md).
+
+**Analysis**
+
+- **Root cause or collateral.** Devices form a parent tree, plus optional
+  extra links (a second uplink, a ring). An unhealthy device the network can
+  still reach is a root cause; one that is cut off is collateral.
+- **Incident lifecycle.** Every root cause becomes a stored incident: opened,
+  optionally acknowledged by an admin, resolved automatically. It has a
+  timeline with notes, and the app reports detection delay, MTTR, alerts
+  suppressed and per-device availability.
+- **Single points of failure.** A hand-written graph engine (Tarjan
+  low-links, union-find) finds every device whose loss cuts others off, and
+  how many.
+- **What-if simulator.** Tick devices to fail and see what would be cut off
+  and which incidents would be raised, without touching the network.
+- **Guided-fix playbooks.** Each incident links to troubleshooting steps for
+  that device type and status.
+
+**Operations**
+
+- **Fault injection.** An admin-only Chaos tab breaks the simulated network
+  on purpose: fail or slow down a device, or run a preset. A failure also
+  stops every device it cuts off. A separate agent, off by default, does the
+  Docker work: [docs/chaos.md](docs/chaos.md).
+- **Admin panel.** Devices, extra links, monitoring settings, users, fault
+  injection and the audit log.
+- **Security.** Two roles (admin, viewer), no built-in passwords, a forced
+  password change at the first login, throttled logins, 60-minute tokens,
+  single-use tickets for the status stream, strict CORS, security headers and
+  an audit log. The backend refuses to start on a placeholder signing
+  secret. Details: [docs/security.md](docs/security.md).
+- **Simulated network.** Twelve containers stand in for a firewall, switches,
+  servers, a PLC, an HMI, access points and a scanner, so development, tests
+  and demos need no hardware.
+
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -47,31 +106,66 @@ flowchart LR
         SSE["SSE /api/stream/status"]
         POLL["Poll loop<br/>(background task)"]
         PING["Ping engine<br/>(icmplib, async ICMP)"]
+        DEB["Debouncer<br/>(raw result to confirmed status)"]
+        AN["Anomaly detectors<br/>(per device and metric, advisory)"]
         ST["StatusStore<br/>(snapshot + pub/sub)"]
-        HS["HistoryStore<br/>(rolling deques)"]
-        FS["FlapStore<br/>(flap counts)"]
+        HS["HistoryStore<br/>(recent samples, hot cache)"]
+        FS["FlapStore<br/>(status changes, hot cache)"]
         IA["IncidentAnalysis<br/>(root cause vs collateral)"]
+        TG["TopologyGraph<br/>(pure graph algorithms)"]
+        CH["Chaos controller<br/>(plans faults, admin only)"]
+        AUTH["Auth<br/>(JWT, login throttle, stream tickets)"]
+        AUD["Audit log<br/>(who did what, from where)"]
+        TRK["IncidentTracker<br/>(open / update / resolve)"]
+        PH["PollHealth<br/>(when the last cycle completed)"]
+        RET["Retention job<br/>(hourly rollup + cleanup)"]
         DB[("SQLite<br/>backend-data volume")]
     end
 
     subgraph SimNet["warehouse-net (10.99.0.0/24)"]
-        SIM["11 × sim-* containers<br/>(Alpine ICMP stubs)"]
+        SIM["12 × sim-* containers<br/>(Alpine ICMP stubs)"]
     end
 
-    UI -- "browser calls :8410 directly" --> PING
+    AGENT["chaos-agent<br/>(profile chaos, off by default)"]
+
+    UI -- "browser calls :8410 directly" --> API
     API --> DB
     API --> ST
     API --> HS
     API --> FS
     API --> IA
+    API -- "SPOF + what-if" --> TG
+    API --> CH
+    API -- "every request" --> AUTH
+    SSE -- "single-use ticket" --> AUTH
+    AUTH -- "account still exists?" --> DB
+    API -- "logins and admin actions" --> AUD
+    AUD --> DB
+    CH -- "what a failure cuts off" --> TG
+    CH -. "control-net + shared secret" .-> AGENT
+    AGENT -. "stop / start / tc netem" .-> SIM
     IA --> ST
+    IA -- "devices + links" --> TG
     SSE --> ST
     POLL --> DB
     POLL --> PING
     PING -- "ICMP echo" --> SIM
-    POLL --> ST
-    POLL --> HS
-    POLL --> FS
+    POLL -- "raw results, of polls and retries" --> DEB
+    POLL -- "raw readings" --> AN
+    AN -. "what is unusual (no status changes)" .-> ST
+    AN -- "anomaly events" --> DB
+    DEB -- "confirmed status" --> ST
+    DEB -- "confirmed status" --> FS
+    POLL -- "raw readings" --> HS
+    POLL -- "samples + transitions, every cycle;<br/>transitions alone after a retry" --> DB
+    POLL -- "confirmed status, every cycle<br/>and after a retry that changed one" --> TRK
+    TRK --> IA
+    TRK -- "incidents + timeline" --> DB
+    POLL -- "cycle completed" --> PH
+    API -- "/api/health: is the data fresh?" --> PH
+    RET --> DB
+    DB -. warm-up at startup .-> HS
+    DB -. warm-up at startup .-> FS
 
     UI -- "loads bundle" --> STATIC
 ```
@@ -80,274 +174,288 @@ The browser is the client that talks to the API: the frontend container only
 serves static files, so API calls and the SSE connection originate from the
 user's browser straight to the backend.
 
-## Repository layout
+More on each part, the data flow and the deployment:
+[docs/architecture.md](docs/architecture.md).
 
-```
-.
-├── backend/                 FastAPI application (Python 3.12)
-│   ├── app/
-│   │   ├── main.py          App factory, lifespan (DB seed + poll loop), SSE endpoint
-│   │   ├── core/            Config (pydantic-settings), JWT/bcrypt security, auth deps
-│   │   ├── db/              SQLAlchemy/sqlmodel session + seed scripts
-│   │   ├── models/          Device, User, AppSettings (SQLModel tables)
-│   │   ├── routers/         auth, devices, settings, users, history, flaps, incidents, playbooks
-│   │   ├── schemas/         Pydantic request/response DTOs
-│   │   ├── services/        ping_engine, poll_loop, status/history/flap stores, incident_analysis
-│   │   └── data/playbooks.py  Static guided-fix playbook content
-│   └── Dockerfile
-├── frontend/                React SPA (React 19 + TypeScript + Vite)
-│   ├── src/
-│   │   ├── components/      Views: Topology, DeviceDetail, Metrics, Stability, Incidents, Admin, Login
-│   │   ├── contexts/        AuthContext (JWT state)
-│   │   ├── hooks/           useStatusStream (SSE), useDevices, useHistory, useFlapCounts, useIncidents
-│   │   └── lib/             api client (fetch + SSE), topology layout, metrics helpers
-│   └── Dockerfile           Multi-stage: node build → nginx static server
-├── infra/
-│   ├── docker-compose.yml   Full stack: 11 sim devices + backend + frontend
-│   ├── devices.seed.json    Seeded device tree (the warehouse topology)
-│   └── README.md            Deployment runbook
-└── docs/                    (empty; reserved for further docs)
-```
+## Data model
 
-## Backend (FastAPI)
-
-The backend is a single FastAPI app (`backend/app/main.py`) that, at startup
-(`lifespan`), initializes the SQLite DB, seeds devices from
-`infra/devices.seed.json`, seeds default users and settings, and launches the
-foreground poll loop as a background `asyncio` task.
-
-### The poll loop
+SQLite, eleven tables. The schema is managed with Alembic and upgraded at
+startup (see [Database migrations](docs/architecture.md#database-migrations)).
 
 ```mermaid
-flowchart TD
-    A["Startup: init DB, seed devices / users / settings"] --> B["Start poll loop task"]
-    B --> C["Read AppSettings row from DB<br/>(poll interval + latency thresholds)"]
-    C --> D["Load devices (id, ip) from Device table"]
-    D --> E["ping_all()<br/>concurrent async ICMP probes via icmplib"]
-    E --> F["classify_status() per device:<br/>healthy / degraded / down / unknown"]
-    F --> G["status_store.update()<br/>notify SSE subscribers"]
-    F --> H["history_store.record()<br/>append to rolling deques"]
-    F --> I["flap_store.record()<br/>count status changes"]
-    G --> J["asyncio.sleep(interval)"]
-    H --> J
-    I --> J
-    J --> C
+erDiagram
+    device ||--o{ device : "parent_id"
+    device ||--o{ device_link : "device_a_id, device_b_id"
+    incident ||--o{ incident_event : "incident_id"
+    device ||..o{ latency_sample : "device_id"
+    device ||..o{ latency_rollup_1m : "device_id"
+    device ||..o{ status_transition : "device_id"
+    device ||..o{ anomaly_event : "device_id"
+    device ||..o{ incident : "root_device_id"
+
+    device {
+        string id PK
+        string name
+        string type
+        string ip
+        string zone
+        string parent_id FK
+        int ping_port
+        string notes
+    }
+    device_link {
+        int id PK
+        string device_a_id FK
+        string device_b_id FK
+    }
+    latency_sample {
+        int id PK
+        string device_id
+        datetime ts
+        float latency_ms
+        string raw_status
+        string confirmed_status
+        float loss_pct
+        float jitter_ms
+    }
+    latency_rollup_1m {
+        int id PK
+        string device_id
+        datetime bucket_start
+        float min
+        float avg
+        float max
+        int sample_count
+        int fail_count
+        float loss_avg
+        float loss_max
+        int loss_count
+        float jitter_avg
+        float jitter_max
+        int jitter_count
+    }
+    status_transition {
+        int id PK
+        string device_id
+        datetime ts
+        string from_status
+        string to_status
+    }
+    incident {
+        int id PK
+        string root_device_id
+        string state
+        datetime opened_at
+        datetime first_failure_at
+        datetime acknowledged_at
+        string acknowledged_by
+        datetime resolved_at
+        int peak_affected_count
+        json affected_device_ids
+    }
+    incident_event {
+        int id PK
+        int incident_id FK
+        datetime ts
+        string type
+        json details
+    }
+    anomaly_event {
+        int id PK
+        string device_id
+        string metric
+        string detector
+        datetime started_at
+        datetime ended_at
+        float value
+        float expected
+        float score
+    }
+    user {
+        int id PK
+        string username UK
+        string password_hash
+        string role
+        boolean must_change_password
+        datetime created_at
+    }
+    appsettings {
+        int id PK
+        string site_name
+        float poll_interval_seconds
+        float latency_warn_ms
+        float latency_crit_ms
+        int flap_threshold
+        int failure_threshold
+        int recovery_threshold
+        int pings_per_cycle
+        int ping_gap_ms
+        float loss_warn_pct
+        float jitter_warn_ms
+        boolean anomaly_enabled
+        string anomaly_detector
+        float anomaly_k
+        int anomaly_m
+        float anomaly_alpha
+        int anomaly_window
+    }
+    audit_event {
+        int id PK
+        datetime ts
+        string actor
+        string action
+        string target
+        string ip
+        json details
+    }
 ```
 
-Everything the poll loop needs is re-read from the DB-backed `AppSettings`
-singleton at the **start of every cycle**, so an admin editing the poll
-interval or latency thresholds in the UI takes effect within one cycle — no
-backend restart required.
+- **Solid lines** are foreign keys declared in the schema. **Dashed lines**
+  are references by id that are deliberately not foreign keys: the history and
+  the incidents of a deleted device are kept (the history until retention
+  removes it, the incidents for good).
+- `appsettings` holds exactly one row. `user` and `audit_event` stand alone:
+  the audit log stores names, not ids, so it outlives what it describes.
+- `device_link` stores a pair once, smaller id first (`CHECK` and `UNIQUE`).
+  `incident` has a partial unique index: one unresolved incident per root
+  device. `latency_rollup_1m` is unique per device and minute.
+- SQLite does not enforce the foreign keys in this app. The API keeps them
+  true instead: a device with children cannot be deleted, and deleting a
+  device deletes its links.
 
-### Device status classification
+What each table holds, and how long:
+[Data persistence and retention](docs/architecture.md#data-persistence-and-retention).
 
-Each probe is classified against live latency thresholds:
+## API
 
-| Result          | Condition                                        |
-| --------------- | ------------------------------------------------ |
-| `healthy`       | reachable, latency ≤ warn threshold              |
-| `degraded`      | reachable, latency > warn **or** > crit threshold |
-| `down`          | unreachable (ICMP timed out)                     |
-| `unknown`       | probe failed with an exception (no result)       |
-
-### Incident analysis
-
-`incident_analysis.analyze_incidents()` is a pure function — status snapshot +
-device tree in, classified incidents out. It is re-evaluated from scratch on
-every `/api/incidents` request, so recovery reclassifies immediately.
-
-```mermaid
-flowchart TD
-    S["Live status snapshot + Device tree"] --> U{"Device unhealthy?<br/>(down or degraded)"}
-    U -- No --> SKIP["Skip"]
-    U -- Yes --> P{"Is parent also unhealthy?"}
-    P -- "No parent / parent healthy" --> RC["ROOT CAUSE<br/>walk downstream descendants<br/>→ list collateral affected"]
-    P -- "Yes" --> COL["COLLATERAL<br/>(consequence of outage above)"]
-    RC --> OUT["Return root causes first,<br/>then collateral (sorted by id)"]
-    COL --> OUT
-```
-
-Each root cause carries the list of `downstream_affected` devices it took down,
-and the frontend renders these as incident cards with a guided-fix playbook
-stepper linked from the static `backend/app/data/playbooks.py`.
-
-### API endpoints
+Every path is under `/api`. `user` means any logged-in account, `admin` the
+admin role, `ticket` a single-use stream ticket. The interactive OpenAPI page
+is at `http://localhost:8410/docs`.
 
 | Method   | Path                              | Access      | Description                                   |
 | -------- | --------------------------------- | ----------- | --------------------------------------------- |
-| `GET`    | `/api/health`                     | public      | Liveness smoke check                          |
+| `GET`    | `/api/health`                     | public      | Liveness, age of the last poll, stale or not  |
 | `POST`   | `/api/auth/login`                 | public      | OAuth2 password login → JWT + role            |
 | `GET`    | `/api/auth/me`                    | user        | Current session identity                       |
 | `PATCH`  | `/api/auth/change-password`       | user        | Self-service password change                   |
 | `GET`    | `/api/status`                     | user        | Latest status snapshot (non-streaming)         |
-| `GET`    | `/api/stream/status?token=`       | user (query)| SSE stream of full status snapshots            |
+| `POST`   | `/api/stream/ticket`              | user        | Single-use ticket (30 s) for the stream       |
+| `GET`    | `/api/stream/status?ticket=`      | ticket      | SSE stream of full status snapshots           |
 | `GET`    | `/api/devices`                    | user        | List devices                                   |
 | `GET`    | `/api/devices/{id}`               | user        | Get one device                                 |
 | `POST`   | `/api/devices`                    | **admin**   | Create device (parent/cycle validation)        |
 | `PATCH`  | `/api/devices/{id}`               | **admin**   | Update device                                  |
 | `DELETE` | `/api/devices/{id}`               | **admin**   | Delete device (blocked if it has children)     |
-| `GET`    | `/api/history/{id}`               | user        | Rolling latency history for a device           |
-| `GET`    | `/api/flaps`                      | user        | Flap counts, highest flapper first             |
-| `GET`    | `/api/incidents`                  | user        | Root-cause/collateral incident set             |
+| `GET`    | `/api/links`                      | user        | Extra links between devices                   |
+| `POST`   | `/api/links`                      | **admin**   | Link two devices (validated)                  |
+| `DELETE` | `/api/links/{id}`                 | **admin**   | Delete a link                                 |
+| `GET`    | `/api/history/{id}`               | user        | Latency history; `?window=` for longer ranges |
+| `GET`    | `/api/flaps`                      | user        | Flap counts (last 30 days), highest first     |
+| `GET`    | `/api/anomalies`                  | user        | Recent anomaly events (advisory), newest first |
+| `GET`    | `/api/incidents`                  | user        | Live root-cause/collateral incident set       |
+| `GET`    | `/api/incidents/history`          | user        | Stored incidents, newest first                |
+| `GET`    | `/api/incidents/{id}`             | user        | One stored incident with its timeline         |
+| `POST`   | `/api/incidents/{id}/acknowledge` | **admin**   | Acknowledge an open incident                  |
+| `POST`   | `/api/incidents/{id}/notes`       | **admin**   | Add a note to an incident's timeline          |
+| `GET`    | `/api/stats/incidents`            | user        | Detection delay, MTTR and alerts suppressed   |
+| `GET`    | `/api/stats/availability?window=` | user        | Per-device uptime over 24h, 7d or 30d         |
+| `GET`    | `/api/analysis/spof`              | user        | Single points of failure, with blast radius   |
+| `POST`   | `/api/analysis/what-if`           | user        | Predicted incidents if given devices failed   |
+| `GET`    | `/api/chaos/state`                | **admin**   | Injected faults in place, and the presets     |
+| `POST`   | `/api/chaos/fail`                 | **admin**   | Fail devices and everything they cut off      |
+| `POST`   | `/api/chaos/degrade`              | **admin**   | Add delay, jitter and packet loss             |
+| `POST`   | `/api/chaos/flap`                 | **admin**   | Switch a device off and on repeatedly         |
+| `POST`   | `/api/chaos/scenario/{name}`      | **admin**   | Run a fault-injection preset                  |
+| `POST`   | `/api/chaos/restore-all`          | **admin**   | Undo every injected fault                     |
 | `GET`    | `/api/playbooks/{type}/{state}`   | user        | Guided-fix playbook for a device type/state    |
 | `GET`    | `/api/settings`                   | user        | Monitoring settings (poll interval, thresholds)|
 | `PATCH`  | `/api/settings`                   | **admin**   | Update monitoring settings                     |
 | `GET`    | `/api/users`                      | **admin**   | List users                                     |
 | `POST`   | `/api/users`                      | **admin**   | Create user                                    |
 | `DELETE` | `/api/users/{id}`                 | **admin**   | Delete user (self/last-admin guarded)          |
+| `GET`    | `/api/audit`                      | **admin**   | Audit log, newest first                       |
 
-> **SSE auth note:** the stream endpoint authenticates via a `token` query
-> parameter because the browser `EventSource` API cannot set an
-> `Authorization` header; every other endpoint uses `Bearer` tokens.
+Requests are authenticated with `Authorization: Bearer <token>`, the token
+coming from `POST /api/auth/login`. A request that breaks a rule gets a 422
+whose `detail` names the field. Request and response shapes, paging and the
+validation rules: [API notes](docs/architecture.md#api-notes).
 
-## Frontend (React)
+## Setup with Docker
 
-A single-page React app (React 19, TypeScript, Vite) styled with Tailwind CSS
-and shadcn/ui components. Routing (`React Router`) and the JWT auth state live
-in `AuthContext`; `ProtectedRoute` guards every view and `AdminRoute` restricts
-the admin panel to `admin` users.
+Needs Docker with Compose v2. Nothing else: the stack builds its own images.
 
-```mermaid
-flowchart LR
-    subgraph Auth["Auth flow"]
-        LOGIN["/login<br/>OAuth2 password form"] --> JWT["JWT stored in localStorage"]
-        JWT --> PROD["ProtectedRoute / AdminRoute"]
-    end
-
-    subgraph Views["Authenticated views"]
-        T["/ — TopologyView<br/>(@xyflow/react graph of the device tree)"]
-        D["/devices/:id — DeviceDetailView<br/>(latency sparkline + status)"]
-        M["/metrics — MetricsView<br/>(Latency & Status Overview tabs, recharts)"]
-        S["/stability — StabilityView<br/>(flap-count bar ranking)"]
-        I["/incidents — IncidentView<br/>(root cause/collateral cards + playbook stepper)"]
-        A["/admin — AdminPanel<br/>(Devices / Settings / Users tabs)"]
-        C["/account — AccountPage<br/>(change password)"]
-    end
-
-    T -. SSE .-> STREAM["/api/stream/status (EventSource + token)"]
-    M -. SSE + /api/history .-> STREAM
-    D -. /api/history .-> REST["Other /api /* REST calls"]
-    S -. /api/flaps + /api/settings .-> REST
-    I -. /api/incidents (poll 10 s) .-> REST
-    A -. /api/devices /settings /users .-> REST
+```sh
+cp infra/.env.example infra/.env
+openssl rand -hex 32          # paste the output into infra/.env as JWT_SECRET_KEY
+make up                       # or: docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-The live status path is **push** (SSE), while everything else is **pull**
-(REST polling): incidents re-poll every 10 s, flap counts/settings on mount,
-and history per device view.
+- Frontend: <http://localhost:8411>
+- API: <http://localhost:8410/api/health>
 
-## Simulated network topology
+The frontend can also be opened as <http://127.0.0.1:8411>: a browser treats
+the two names as different origins, and the API allows both.
 
-The seeded device tree (`infra/devices.seed.json`) models a small warehouse
-LAN: an edge firewall fronts a server tier and an OT tier (PLCs, HMIs, access
-points, scanners).
+This starts 14 containers: 12 simulated devices, the backend and the
+frontend. The backend refuses to start (its log says why) while
+`JWT_SECRET_KEY` is still the placeholder or shorter than 32 characters.
 
-```mermaid
-flowchart TD
-    FW["fw-01 · Edge Firewall<br/>10.99.0.1 · edge"]
-    SWE["sw-edge · Edge Switch<br/>10.99.0.2 · edge"]
-    SWS["sw-server · Server Tier Switch<br/>10.99.0.3 · server-tier"]
-    SRV1["srv-prod-1 · Production Server 1<br/>10.99.0.10 · server-tier"]
-    SRV2["srv-prod-2 · Production Server 2<br/>10.99.0.11 · server-tier"]
-    SWO["sw-ot · OT Tier Switch<br/>10.99.0.4 · ot-tier"]
-    PLC["plc-conveyor-1 · Conveyor PLC 1<br/>10.99.0.20 · ot-tier"]
-    HMI["hmi-panel-1 · HMI Panel 1<br/>10.99.0.21 · ot-tier"]
-    AP1["ap-aisle-1 · Aisle 1 Access Point<br/>10.99.0.30 · ot-tier"]
-    AP2["ap-aisle-2 · Aisle 2 Access Point<br/>10.99.0.31 · ot-tier"]
-    SCN["scanner-1 · Barcode Scanner 1<br/>10.99.0.40 · ot-tier"]
+**First login.** The first start creates two accounts, `admin` and `viewer`.
+Their first passwords are `ADMIN_INITIAL_PASSWORD` and
+`VIEWER_INITIAL_PASSWORD` from `infra/.env`. If you set none, the backend
+generates them and writes them to its log, once:
 
-    FW --> SWE
-    SWE --> SWS
-    SWE --> SWO
-    SWS --> SRV1
-    SWS --> SRV2
-    SWO --> PLC
-    SWO --> HMI
-    SWO --> AP1
-    SWO --> AP2
-    SWO --> SCN
+```sh
+docker compose -f infra/docker-compose.yml logs backend | grep "initial password"
 ```
 
-This hierarchy is exactly what the incident analysis walks: if `sw-ot` goes
-down, all five OT devices under it come back as **collateral** of a single
-root cause instead of five separate alarms.
+Each account has to choose a new password at its first login before it can do
+anything else.
 
-## Deployment (Docker Compose)
+**Demo mode.** `DEMO_MODE=true` in `infra/.env` creates the accounts as
+`admin` / `admin123` and `viewer` / `viewer123`, with no forced change. It is
+insecure, off by default, and only chooses the passwords of a new database:
+to switch an existing installation, run `make seed-reset`.
 
-The full stack runs from `infra/docker-compose.yml` on a single bridge network
-(`warehouse-net`, `10.99.0.0/24`) with the gateway moved off `.1` so the
-firewall stub can own `10.99.0.1`.
+**Fault injection.** Off by default. To enable the Chaos tab:
 
-```mermaid
-flowchart LR
-    subgraph warehouse-net["warehouse-net · 10.99.0.0/24"]
-        FW["sim-fw-01 · 10.99.0.1"]
-        S1["sim-sw-edge · .2"]
-        S2["sim-sw-server · .3"]
-        S3["sim-sw-ot · .4"]
-        S4["sim-srv-prod-1 · .10"]
-        S5["sim-srv-prod-2 · .11"]
-        S6["sim-plc-conveyor-1 · .20"]
-        S7["sim-hmi-panel-1 · .21"]
-        S8["sim-ap-aisle-1 · .30"]
-        S9["sim-ap-aisle-2 · .31"]
-        S10["sim-scanner-1 · .40"]
-        BE["backend · 10.99.0.99<br/>:8410 · cap NET_RAW"]
-    end
-
-    BR["Browser"]
-    FE["frontend (nginx) · :8411<br/>no network — serves static bundle"]
-
-    BE -- "ICMP probes (all 11 sim-* stubs)" --> FW
-    BE -- "ICMP" --> S2
-    BE -- "ICMP" --> S3
-    BE -- "ICMP" --> S6
-    BE -- "ICMP" --> S9
-    BR -- "API + SSE :8410" --> BE
-    BR -- "GET bundle :8411" --> FE
-    FE -.->|"no direct traffic<br/>(out-of-band)"| BE
+```sh
+echo "CHAOS_AGENT_TOKEN=$(openssl rand -hex 32)" >> infra/.env
+make up CHAOS=1
 ```
 
-- **11 `sim-*` containers** — Alpine stubs that answer ICMP, standing in for
-  warehouse hardware.
-- **`backend`** — FastAPI + SQLite; needs `CAP_NET_RAW` for raw ICMP sockets,
-  publishes `:8410`, persists the DB in the `backend-data` named volume, and
-  mounts `infra/devices.seed.json` read-only as the topology source.
-- **`frontend`** — nginx serving the built SPA on `:8411`. It is deliberately
-  not on `warehouse-net`: it never talks to the backend itself (the browser
-  does), so attaching it adds nothing.
-- **13 containers total** when running (11 sims + backend + frontend).
+Read [docs/chaos.md](docs/chaos.md) first: the agent holds the Docker socket.
 
-Persisted SQLite data (settings, users, devices) survives `down`/`up` and
-rebuilds via the `backend-data` volume; flap counts and latency history are
-in-memory and reset on backend restart by design.
+**Stopping.** `make down` stops the stack and keeps the data (settings,
+users, devices, history, incidents, audit log) in the `backend-data` volume.
+`make seed-reset` also deletes that volume and starts again from the seed
+file. If the frontend is reached from another machine, set
+`FRONTEND_API_BASE_URL` in `infra/.env` to the address of the API as that
+browser sees it, add the frontend's own origin (for example
+`http://10.0.0.50:8411`) to `CORS_ORIGINS`, and run `make up` again.
 
-## Running with Docker Compose
+## Development setup
 
-The full deployment (simulated devices + backend + frontend) runs from
-`infra/`: see **`infra/README.md`** for setup (it requires a generated
-`JWT_SECRET_KEY` in `infra/.env`), the startup/stop commands, and the seeded
-login credentials.
-
-## Development Setup
-
-### Backend
+Backend (Python 3.12):
 
 ```sh
 cd backend
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # set JWT_SECRET_KEY / CORS_ORIGINS / thresholds
+pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env   # then set JWT_SECRET_KEY, or DEMO_MODE=True
 uvicorn app.main:app --reload --port 8410
 ```
 
-Requires `CAP_NET_RAW` (or root) for privileged raw-ICMP pings. For
-rootless local development, set `PING_PRIVILEGED=False` in `.env` to use
-icmplib's unprivileged datagram mode (see `backend/app/services/ping_engine.py`
-for platform caveats). Seeded logins default to `admin` / `admin123` and
-`viewer` / `viewer123`.
+- The backend does not start on the placeholder `JWT_SECRET_KEY` from
+  `.env.example`. Put your own in `.env`, for example the output of
+  `python -c "import secrets; print(secrets.token_hex(32))"`, or set
+  `DEMO_MODE=True` for a throwaway local setup.
+- Raw ICMP needs root or `CAP_NET_RAW`. Without it, set
+  `PING_PRIVILEGED=False` in `.env`.
+- The first start prints a generated password for `admin` and `viewer` in the
+  log (or uses `ADMIN_INITIAL_PASSWORD` and `VIEWER_INITIAL_PASSWORD`).
 
-### Frontend
+Frontend (Node 22):
 
 ```sh
 cd frontend
@@ -356,22 +464,244 @@ cp .env.example .env   # VITE_API_BASE_URL defaults to http://localhost:8410
 npm run dev            # Vite dev server on :5173
 ```
 
-### Without real hardware
+A backend started like this pings the addresses in the seed file. The
+simulated devices can only be reached from inside Docker (or from a Linux
+Docker host), so for development without hardware either run the Docker
+stack, or point `SEED_PATH` at a copy of `infra/devices.seed.json` whose
+addresses your machine can reach (`127.0.0.1` answers).
 
-Run the 11 simulated devices from `infra/docker-compose.yml`:
+Common commands, from the repository root:
+
+| Command | What it does |
+| --- | --- |
+| `make up` | Builds and starts the Docker stack. `make up CHAOS=1` adds the fault-injection agent. |
+| `make down` | Stops the stack. The data is kept. |
+| `make seed-reset` | Stops the stack, **deletes its database** and starts again from the seed file. |
+| `make test` | Backend tests with coverage, then the coverage gate CI enforces. |
+| `make lint` | Frontend typecheck and lint. |
+| `make build` | Frontend production build. |
+
+## Configuration
+
+**Environment variables.** The backend reads them from the environment or
+from `backend/.env`. In the Docker stack the ones marked in the third column
+are set in `infra/.env`; the others keep their defaults there. Both
+`.env.example` files explain each value.
+
+| Variable | Default | In `infra/.env` | Meaning |
+| --- | --- | --- | --- |
+| `JWT_SECRET_KEY` | a placeholder | required | Signs the login tokens. At least 32 characters, not a placeholder. |
+| `JWT_ALGORITHM` | `HS256` | | Signing algorithm. |
+| `JWT_EXPIRE_MINUTES` | `60` | yes | How long a login lasts. |
+| `ADMIN_INITIAL_PASSWORD` | not set | yes | First password of `admin`. Not set: generated and logged once. |
+| `VIEWER_INITIAL_PASSWORD` | not set | yes | The same for `viewer`. |
+| `DEMO_MODE` | `False` | yes | Insecure: documented demo logins, no forced password change. |
+| `CORS_ORIGINS` | `["http://localhost:5173","http://127.0.0.1:5173"]` | yes | Exact origins that may call the API: the Vite dev server under both of its names. The stack adds port 8411 under both. |
+| `DATABASE_PATH` | `./data/network_analyser.db` | | The SQLite file. |
+| `SEED_PATH` | not set | | The seed file. Not set: `infra/devices.seed.json`. |
+| `PING_PRIVILEGED` | `True` | | Raw ICMP sockets. `False` uses the unprivileged mode. |
+| `PING_TIMEOUT_SECONDS` | `2.0` | yes | How long one ping waits for its reply. |
+| `POLL_ENABLED` | `True` | | `False` starts the API without the poll loop (the tests do). |
+| `PING_INTERVAL_SECONDS` | `8.0` | | Fallback only, used if the settings row is missing or has not been read yet. |
+| `LATENCY_WARN_MS` | `100.0` | | Fallback only, used if the settings row is missing. |
+| `LATENCY_CRIT_MS` | `500.0` | | Fallback only, as above. |
+| `HISTORY_MAX_SAMPLES` | `36` | | Recent samples per device kept in memory. |
+| `RAW_RETENTION_HOURS` | `24` | yes | Raw samples older than this become 1-minute rollups. |
+| `ROLLUP_RETENTION_DAYS` | `30` | yes | Rollups older than this are deleted. |
+| `TRANSITION_RETENTION_DAYS` | `30` | yes | Status changes and anomaly events older than this are deleted. Also the flap-count window. |
+| `RETENTION_INTERVAL_SECONDS` | `3600` | yes | How often the retention job runs. |
+| `CHAOS_AGENT_URL` | not set | yes | Where the chaos agent listens. The stack sets it. |
+| `CHAOS_AGENT_TOKEN` | not set | yes | Shared secret with the chaos agent. Not set: fault injection is off. |
+| `APP_NAME` | `Network Analyser API` | | Shown by `/api/health`. |
+| `APP_ENV` | `development` | | Shown by `/api/health`. |
+
+Two more are read when the frontend is built: `FRONTEND_API_BASE_URL` in
+`infra/.env` (Docker) and `VITE_API_BASE_URL` in `frontend/.env`
+(development). Both are the address of the API as the browser sees it, and
+default to `http://localhost:8410`.
+
+**Monitoring settings.** These live in the database and are changed in
+Admin, Settings (or with `PATCH /api/settings`). The poll loop reads them at
+the start of every cycle, so a change needs no restart.
+
+| Setting | Default | Allowed | Meaning |
+| --- | --- | --- | --- |
+| `site_name` | `Warehouse Network Monitor` | 1 to 100 characters | Name of the site. |
+| `poll_interval_seconds` | `8` | 5 to 3600 | Time from the start of one poll cycle to the start of the next. |
+| `latency_warn_ms` | `100` | above 0, below crit | Degraded above this average latency. |
+| `latency_crit_ms` | `500` | above warn | The upper latency threshold. |
+| `flap_threshold` | `3` | 1 to 1000 | Status changes that mark a device as flapping. |
+| `failure_threshold` | `3` | 1 to 10 | Results in a row (a poll, then retries) before a worse status is confirmed. |
+| `recovery_threshold` | `2` | 1 to 10 | Polls in a row before a better status is confirmed. |
+| `pings_per_cycle` | `4` | 1 to 10 | Pings per device per cycle. |
+| `ping_gap_ms` | `200` | 10 to 5000 | Time from one of them to the next. |
+| `loss_warn_pct` | `20` | above 0, up to 100 | Degraded from this much packet loss. |
+| `jitter_warn_ms` | `30` | above 0 | Degraded from this much jitter. |
+| `anomaly_enabled` | `true` | true, false | Anomaly detection on or off. |
+| `anomaly_detector` | `ewma` | `ewma`, `rolling` | Which detector. |
+| `anomaly_k` | `3` | 1 to 10 | Standard deviations above the baseline that count. |
+| `anomaly_m` | `3` | 1 to 20 | Readings in a row that have to be above. |
+| `anomaly_alpha` | `0.1` | 0.01 to 0.5 | EWMA only: how fast the baseline forgets. |
+| `anomaly_window` | `60` | 30 to 1000 | Rolling only: how many readings it looks back on. |
+
+`pings_per_cycle x ping_gap_ms + PING_TIMEOUT_SECONDS` has to fit in 80% of
+the poll interval; a combination that does not is rejected with the
+arithmetic in the message. With the defaults that is 2.8 s of 6.4 s.
+
+These are the defaults of a new database. An existing one keeps the values it
+has stored, so its poll interval stays what it was (`10`, if it was never
+changed): change it in Admin, Settings, or start afresh with
+`make seed-reset`.
+
+## Testing
+
+Backend tests live in `backend/tests/` and run with pytest. They need no
+network, no root and no Docker:
+
+- they use a temporary SQLite file, never the dev database
+  (`tests/conftest.py` refuses to start otherwise);
+- the background poll loop is off (`POLL_ENABLED=false`), and the loop itself
+  is tested with a fake ping function, so no ICMP is sent;
+- nothing waits for real time: the login limiter and the stream tickets take
+  their clock as a parameter, and the tests move it by hand.
 
 ```sh
-docker compose -f infra/docker-compose.yml up -d sim-fw-01 sim-sw-edge sim-sw-server sim-sw-ot \
-  sim-srv-prod-1 sim-srv-prod-2 sim-plc-conveyor-1 sim-hmi-panel-1 sim-ap-aisle-1 sim-ap-aisle-2 sim-scanner-1
-docker compose -f infra/docker-compose.yml down   # or the whole stack
+cd backend
+python -m venv .venv && source .venv/bin/activate   # Python 3.12
+pip install -r requirements.txt -r requirements-dev.txt
+pytest                                              # run the suite
+pytest --cov=app --cov-report=term-missing          # same, with a coverage report
+coverage report --include="app/services/*" --fail-under=80   # the gate CI enforces
+coverage html                                       # optional: browsable report in htmlcov/
 ```
 
-Or run the whole stack (sims + backend + frontend) per **`infra/README.md`**.
+These are characterization tests: they pin what the code does today, so a
+later change in behaviour shows up as a failing test. A test marked `xfail`
+records a known bug that has deliberately not been fixed yet; pytest lists each
+one with its reason at the end of the run. There are none at the moment.
+
+The suite runs with `DEMO_MODE=true`, so that it can log in as `admin` /
+`admin123`; `test_security.py` switches it off to test the forced password
+change, how the default accounts are seeded, and the refusal to start on a
+placeholder signing secret.
+
+The suite is seeded with a frozen copy of the original 11-device tree
+(`backend/tests/data/classic_tree.seed.json`), so tests of the monitoring
+logic do not change when the shipped topology does. `test_seed_topology.py`
+checks the shipped seed file, the compose file that simulates it, and link
+seeding.
+
+The graph algorithms are also checked on seeded random graphs against slow,
+obvious implementations (see [docs/algorithms.md](docs/algorithms.md#the-graph-engine)). A failing case prints
+its seed, so it can be reproduced.
+
+The anomaly detectors' running statistics are compared with a recomputation
+from scratch on random data, and `test_eval_anomaly.py` runs the evaluation
+script and checks that the figures quoted in
+[docs/anomaly-evaluation.md](docs/anomaly-evaluation.md) are what it prints.
+
+Frontend checks:
+
+```sh
+cd frontend
+npm ci
+npx tsc -b --noEmit   # typecheck
+npm run lint
+npm run build
+```
+
+`.github/workflows/ci.yml` runs both sets of commands on every push and pull
+request.
+
+`backend/tests/test_docs.py` keeps this README honest: it fails if the API
+table and the app's routes differ, if the ER diagram and the models differ,
+if a setting is missing from the tables above or from an `.env.example`
+file, or if a link between the documents points nowhere.
+
+`make test` runs the backend commands above, and `make lint` and `make build`
+the frontend ones.
+
+## Known limitations
+
+Monitoring and analysis
+
+- **Ping only.** A device is judged on ICMP replies. One that blocks ping
+  looks down, and a service that has died on a host that still answers looks
+  healthy.
+- **`unknown` is never a failure.** If the monitor itself cannot probe (no
+  `CAP_NET_RAW`, say), every device is `unknown` and no incident is raised.
+- **A stalled monitor is reported, not repaired.** When no poll cycle
+  completes for about three poll intervals, the pages show a warning and
+  `/api/health` reports `poll_stale`. Nothing restarts the poll loop, and the
+  endpoint still answers 200 with `status: ok`, as it always did, so a check
+  that reads only the status code does not notice. A cycle whose database
+  write fails counts as completed: the live statuses are current then, and
+  only the backend log says that the history is not being stored.
+- **Detection takes three results in a row.** That is the price of
+  debouncing. With the defaults an outage is confirmed about 13 seconds after
+  it begins (10 to 17 in the measurements): the poll that finds the device
+  silent, then two retries, each a second after the pass before it. Each of
+  the three takes 2.6 seconds, because the last ping waits for its timeout;
+  a lower `PING_TIMEOUT_SECONDS` shortens it. A recovery is not retried: it
+  takes two polls, 10 to 16 seconds.
+- **Shared collateral is counted once per root cause.** With redundant links
+  a device cut off by two failures together is listed under both, so "alerts
+  suppressed" counts it twice.
+- **Anomaly detection needs a warm-up.** 30 readings per device after every
+  backend restart (four minutes); a slowdown that begins during the
+  warm-up is learned as normal. It does not see a slow drift, and it was
+  evaluated on synthetic traces, not on a real network.
+
+Design limits
+
+- **One backend process.** The latest snapshot, the debounce state, the
+  detectors, the login throttle, the stream tickets and the time of the last
+  poll are in its memory. A second process would poll twice and disagree.
+- **SQLite.** One writer at a time, and foreign keys are not enforced.
+- **Built for tens of devices.** The Metrics page asks for history one device
+  at a time, and nothing is paged on the topology page.
+- **Security.** Plain HTTP, the token in `localStorage`, no way to revoke a
+  token before it expires. The full list is in
+  [docs/security.md](docs/security.md#known-limitations-accepted).
+- **Seeded devices and links come back.** One that an admin deletes is added
+  again at the next start, because seeding adds whatever is missing.
+- **Stored data is not re-checked.** The validation rules apply to new
+  requests. The seed file is trusted: its links are checked against the link
+  rules and its devices for parent loops, and nothing else.
+
+Simulation and tooling
+
+- **The simulated devices do not depend on each other.** Each container
+  answers ping by itself, so the chaos agent stops the devices behind a
+  failed one to make a failure look real. It can only act on simulated
+  devices, and it holds the Docker socket: see [docs/chaos.md](docs/chaos.md).
+- **Checked on Docker Desktop for macOS and in Chrome.** A native Linux
+  Docker host (where `tc netem` needs the `sch_netem` kernel module loaded)
+  and other browsers were not tried.
+- **No automated frontend tests.** The frontend is covered by the typecheck,
+  the linter, the build and manual browser runs.
+- **Dependency advisories were not revisited.** `pip-audit` and `npm audit`
+  reported advisories for some pinned packages at the start of this work;
+  the pins are unchanged, and whether any applies here was not assessed.
+
+## Documentation
+
+| Document | What is in it |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | The parts, the poll loop, the incident lifecycle, storage and retention, migrations, the frontend, the deployment |
+| [docs/algorithms.md](docs/algorithms.md) | Every algorithm: purpose, cost, and why it is right |
+| [docs/design-decisions.md](docs/design-decisions.md) | Why SSE, SQLite, debouncing, advisory anomalies and the other main choices, with their tradeoffs |
+| [docs/security.md](docs/security.md) | Threat model, what is mitigated, what is accepted |
+| [docs/chaos.md](docs/chaos.md) | Fault injection: how it works, the Docker-socket risk, the scenarios |
+| [docs/anomaly-evaluation.md](docs/anomaly-evaluation.md) | Measured precision, recall and delay of the anomaly detectors |
+| [docs/demo-script.md](docs/demo-script.md) | A timed five-minute demo, click by click |
+| [CHANGELOG.md](CHANGELOG.md) | What each commit on this branch added |
 
 ## Tech stack
 
 | Layer        | Technologies                                                                  |
 | ------------ | ----------------------------------------------------------------------------- |
-| Backend      | Python 3.12, FastAPI, Uvicorn, SQLModel + SQLite, `icmplib`, sse-starlette, passlib + bcrypt (4.0.1), python-jose, pydantic-settings |
+| Backend      | Python 3.12, FastAPI, Uvicorn, SQLModel + SQLite, Alembic, `icmplib`, sse-starlette, passlib + bcrypt (4.0.1), python-jose, pydantic-settings |
 | Frontend     | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix), @xyflow/react, recharts, React Router |
 | Deployment   | Docker Compose, nginx, Alpine, multi-stage Dockerfiles                        |
+| Testing / CI | pytest, pytest-asyncio, pytest-cov, httpx (`TestClient`), GitHub Actions      |

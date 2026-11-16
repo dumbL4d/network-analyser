@@ -1,19 +1,24 @@
 """Device metadata API: read-only for everyone, writes admin-only.
 
-The two GET endpoints are viewer- AND admin-readable (unchanged from Ticket
-2.1). POST / PATCH / DELETE are protected by ``require_role("admin")`` and are
+The two GET endpoints are viewer- AND admin-readable. POST / PATCH / DELETE
+are protected by ``require_role("admin")`` and are
 where parent-reference sanity checks live (parent must exist, no self-paren, no
 circular references, no deleting a device that still has children).
+
+They also keep the extra links (``device_link``) consistent: deleting a device
+deletes its links, and moving a device under one it was linked to removes that
+link, because the tree edge now is that connection.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
-from app.core.deps import get_current_user, require_role
+from app.core.deps import Audit, get_current_user, require_role
 from app.db.session import get_session
 from app.models.device import Device
 from app.models.user import User
 from app.schemas.device import DeviceCreate, DeviceDTO, DeviceUpdate
+from app.services.device_links import remove_link_between, remove_links_of
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -95,6 +100,7 @@ def create_device(
     payload: DeviceCreate,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> DeviceDTO:
     # Checked first so a duplicate reports 409, not a parent-reference error.
     existing = session.get(Device, payload.id)
@@ -109,7 +115,11 @@ def create_device(
     session.add(device)
     session.commit()
     session.refresh(device)
-    return DeviceDTO.model_validate(device)
+    created = DeviceDTO.model_validate(device)
+    audit.record(
+        current_user.username, "device.created", payload.id, **payload.model_dump(exclude={"id"})
+    )
+    return created
 
 
 @router.patch("/{device_id}", response_model=DeviceDTO)
@@ -118,19 +128,29 @@ def update_device(
     payload: DeviceUpdate,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> DeviceDTO:
     device = _get_device_or_404(device_id, session)
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
 
     if "parent_id" in updates:
         _assert_valid_parent(device_id, updates["parent_id"], session)
+        # An extra link to the new parent would now duplicate the tree edge.
+        remove_link_between(session, device_id, updates["parent_id"])
 
+    changes = {
+        field: {"from": getattr(device, field), "to": value}
+        for field, value in updates.items()
+        if getattr(device, field) != value
+    }
     for field, value in updates.items():
         setattr(device, field, value)
     session.add(device)
     session.commit()
     session.refresh(device)
-    return DeviceDTO.model_validate(device)
+    updated = DeviceDTO.model_validate(device)
+    audit.record(current_user.username, "device.updated", device_id, changes=changes)
+    return updated
 
 
 @router.delete("/{device_id}", status_code=204)
@@ -138,11 +158,13 @@ def delete_device(
     device_id: str,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_role("admin")),
+    audit: Audit = Depends(),
 ) -> None:
     device = _get_device_or_404(device_id, session)
 
-    # ``parent_id`` is a real FK constraint (Ticket 1.1), so deleting a parent
-    # would raise a raw DB integrity error. Surface a helpful 409 instead.
+    # SQLite does not enforce the ``parent_id`` foreign key here (the pragma is
+    # off), so without this check the children would be left pointing at a
+    # device that no longer exists.
     children = session.exec(
         select(Device).where(Device.parent_id == device_id)
     ).all()
@@ -155,5 +177,8 @@ def delete_device(
             ),
         )
 
+    name, ip = device.name, device.ip
+    remove_links_of(session, device_id)  # a link must join two existing devices
     session.delete(device)
     session.commit()
+    audit.record(current_user.username, "device.deleted", device_id, name=name, ip=ip)

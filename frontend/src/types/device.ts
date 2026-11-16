@@ -13,10 +13,63 @@ export const DEVICE_TYPES = [
 
 export type DeviceType = (typeof DEVICE_TYPES)[number]
 
+/** What an anomaly detector finds unusual about one metric of a device. */
+export interface MetricAnomaly {
+  /** The latest reading, and what the detector expected instead. */
+  value: number
+  expected: number
+  /** How many standard deviations above its baseline the reading is. */
+  score: number
+  /** When the anomaly began. */
+  since: string
+}
+
+/** The metrics ("latency", "loss") that are out of the ordinary right now. */
+export type DeviceAnomaly = Record<string, MetricAnomaly>
+
+/** GET /api/anomalies row: one anomaly a detector found. */
+export interface AnomalyEvent {
+  id: number
+  device_id: string
+  metric: 'latency' | 'loss'
+  detector: 'ewma' | 'rolling'
+  started_at: string
+  /** Null while the anomaly is still going on. */
+  ended_at: string | null
+  value: number
+  expected: number
+  score: number
+}
+
 export interface DeviceStatusDTO {
+  /** Confirmed (debounced) status. */
   status: DeviceStatus
   latency_ms: number | null
   timestamp: string
+  /** The latest raw result, before debouncing: of a poll, or of a retry. */
+  raw_status: DeviceStatus
+  /** Results in a row (polls and retries) whose raw result was not healthy. */
+  consecutive_failures: number
+  /** Results in a row (polls and retries) whose raw result was healthy. */
+  consecutive_successes: number
+  /**
+   * The probes of the latest poll cycle. `latency_ms` above is their average
+   * round-trip time; these are the fastest and the slowest reply.
+   */
+  latency_min_ms: number | null
+  latency_max_ms: number | null
+  /** Share of those probes without a reply, 0-100. Null if not measured. */
+  loss_pct: number | null
+  /**
+   * Jitter: the mean change between consecutive round-trip times, in ms.
+   * Null unless at least two probes were answered.
+   */
+  jitter_ms: number | null
+  /**
+   * Advisory: what the anomaly detector finds unusual, per metric, or null.
+   * It never changes `status`.
+   */
+  anomaly: DeviceAnomaly | null
 }
 
 export interface DeviceOut {
@@ -56,9 +109,48 @@ export interface DeviceUpdate {
 export interface HistorySampleOut {
   latency_ms: number | null
   timestamp: string
+  /** Packet loss (percent) and jitter (ms) of that poll; null if not measured. */
+  loss_pct: number | null
+  jitter_ms: number | null
 }
 
-/** GET /api/flaps row: session-cumulative status-flap count per device. */
+/** Time ranges GET /api/history/{id}?window=... accepts. */
+export const HISTORY_WINDOWS = ['1h', '6h', '24h', '7d', '30d'] as const
+export type HistoryWindow = (typeof HISTORY_WINDOWS)[number]
+
+/** A chart's time range. 'live' is the recent in-memory samples (no window). */
+export type HistoryRange = 'live' | HistoryWindow
+
+/** One point of a history: a raw reading, or a time bucket (min / avg / max). */
+export interface HistoryPoint {
+  timestamp: string
+  /** The reading, or the bucket's average. Null when nothing replied. */
+  latency_ms: number | null
+  min_ms: number | null
+  max_ms: number | null
+  /** Polls this point stands for (1 for a raw reading). */
+  sample_count: number
+  /** How many of those polls got no reply. */
+  fail_count: number
+  /** Packet loss in percent: the reading, or the bucket's average and peak. */
+  loss_pct: number | null
+  loss_max_pct: number | null
+  /** Jitter in ms: the reading, or the bucket's average and peak. */
+  jitter_ms: number | null
+  jitter_max_ms: number | null
+}
+
+/** GET /api/history/{id}?window=... response. */
+export interface HistoryWindowOut {
+  device_id: string
+  window: HistoryWindow
+  /** 'raw', or the bucket size the backend used: '1m', '5m', '30m', '2h'. */
+  resolution: string
+  resolution_seconds: number | null
+  points: HistoryPoint[]
+}
+
+/** GET /api/flaps row: confirmed status changes of a device in the flap window. */
 export interface FlapCountOut {
   device_id: string
   flap_count: number

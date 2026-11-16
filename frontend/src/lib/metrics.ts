@@ -1,14 +1,14 @@
-import type { HistorySampleOut } from '@/types/device'
+import type { HistoryPoint } from '@/types/device'
 
 /**
- * Median latency in ms over a device's non-null history samples, or `null`
- * when there are no non-null samples to summarize.
+ * Median latency in ms over the points that have a latency, or `null` when
+ * none has. For bucketed history this is the median of the bucket averages.
  */
 export function computeMedianLatency(
-  samples: HistorySampleOut[],
+  points: Pick<HistoryPoint, 'latency_ms'>[],
 ): number | null {
-  const values = samples
-    .map((sample) => sample.latency_ms)
+  const values = points
+    .map((point) => point.latency_ms)
     .filter((value): value is number => value !== null)
     .sort((a, b) => a - b)
 
@@ -19,15 +19,30 @@ export function computeMedianLatency(
   return (values[middle - 1] + values[middle]) / 2
 }
 
+/** Mean of the values that are there, or `null` when none is. */
+export function computeMean(values: (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null)
+  if (present.length === 0) return null
+  return present.reduce((sum, value) => sum + value, 0) / present.length
+}
+
+/** The highest of the values that are there, or `null` when none is. */
+export function computePeak(values: (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null)
+  return present.length === 0 ? null : Math.max(...present)
+}
+
 /**
- * Reachability ratio as a percentage (0-100): the share of history samples
- * where the device answered (non-null latency). Empty sample windows report 0
- * so down/unknown periods are never masked.
+ * Reachability as a percentage (0-100): the share of polls that got a reply.
+ * A bucketed point stands for several polls, so the counts are used; a raw
+ * reading counts as one poll. No polls at all reports 0, so down/unknown
+ * periods are never masked.
  */
-export function computeReachabilityRatio(samples: HistorySampleOut[]): number {
-  if (samples.length === 0) return 0
-  const reachable = samples.filter(
-    (sample) => sample.latency_ms !== null,
-  ).length
-  return Math.round((reachable / samples.length) * 100)
+export function computeReachabilityRatio(
+  points: Pick<HistoryPoint, 'sample_count' | 'fail_count'>[],
+): number {
+  const polls = points.reduce((sum, point) => sum + point.sample_count, 0)
+  if (polls === 0) return 0
+  const failed = points.reduce((sum, point) => sum + point.fail_count, 0)
+  return Math.round(((polls - failed) / polls) * 100)
 }
