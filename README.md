@@ -98,10 +98,10 @@ flowchart LR
     end
 
     subgraph FrontendContainer["frontend container (nginx)"]
-        STATIC["Static bundle<br/>served on :8080"]
+        STATIC["Static bundle<br/>served on :8411"]
     end
 
-    subgraph BackendContainer["backend container (FastAPI + uvicorn :8000)"]
+    subgraph BackendContainer["backend container (FastAPI + uvicorn :8410)"]
         API["REST /api/* routers"]
         SSE["SSE /api/stream/status"]
         POLL["Poll loop<br/>(background task)"]
@@ -128,7 +128,7 @@ flowchart LR
 
     AGENT["chaos-agent<br/>(profile chaos, off by default)"]
 
-    UI -- "browser calls :8000 directly" --> API
+    UI -- "browser calls :8410 directly" --> API
     API --> DB
     API --> ST
     API --> HS
@@ -330,7 +330,7 @@ What each table holds, and how long:
 
 Every path is under `/api`. `user` means any logged-in account, `admin` the
 admin role, `ticket` a single-use stream ticket. The interactive OpenAPI page
-is at `http://localhost:8000/docs`.
+is at `http://localhost:8410/docs`.
 
 | Method   | Path                              | Access      | Description                                   |
 | -------- | --------------------------------- | ----------- | --------------------------------------------- |
@@ -390,8 +390,11 @@ openssl rand -hex 32          # paste the output into infra/.env as JWT_SECRET_K
 make up                       # or: docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-- Frontend: <http://localhost:8080>
-- API: <http://localhost:8000/api/health>
+- Frontend: <http://localhost:8411>
+- API: <http://localhost:8410/api/health>
+
+The frontend can also be opened as <http://127.0.0.1:8411>: a browser treats
+the two names as different origins, and the API allows both.
 
 This starts 14 containers: 12 simulated devices, the backend and the
 frontend. The backend refuses to start (its log says why) while
@@ -429,7 +432,7 @@ users, devices, history, incidents, audit log) in the `backend-data` volume.
 file. If the frontend is reached from another machine, set
 `FRONTEND_API_BASE_URL` in `infra/.env` to the address of the API as that
 browser sees it, add the frontend's own origin (for example
-`http://10.0.0.50:8080`) to `CORS_ORIGINS`, and run `make up` again.
+`http://10.0.0.50:8411`) to `CORS_ORIGINS`, and run `make up` again.
 
 ## Development setup
 
@@ -440,7 +443,7 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env   # then set JWT_SECRET_KEY, or DEMO_MODE=True
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8410
 ```
 
 - The backend does not start on the placeholder `JWT_SECRET_KEY` from
@@ -457,7 +460,7 @@ Frontend (Node 22):
 ```sh
 cd frontend
 npm install
-cp .env.example .env   # VITE_API_BASE_URL defaults to http://localhost:8000
+cp .env.example .env   # VITE_API_BASE_URL defaults to http://localhost:8410
 npm run dev            # Vite dev server on :5173
 ```
 
@@ -493,7 +496,7 @@ are set in `infra/.env`; the others keep their defaults there. Both
 | `ADMIN_INITIAL_PASSWORD` | not set | yes | First password of `admin`. Not set: generated and logged once. |
 | `VIEWER_INITIAL_PASSWORD` | not set | yes | The same for `viewer`. |
 | `DEMO_MODE` | `False` | yes | Insecure: documented demo logins, no forced password change. |
-| `CORS_ORIGINS` | `["http://localhost:5173"]` | yes | Exact origins that may call the API. The stack adds `http://localhost:8080`. |
+| `CORS_ORIGINS` | `["http://localhost:5173","http://127.0.0.1:5173"]` | yes | Exact origins that may call the API: the Vite dev server under both of its names. The stack adds port 8411 under both. |
 | `DATABASE_PATH` | `./data/network_analyser.db` | | The SQLite file. |
 | `SEED_PATH` | not set | | The seed file. Not set: `infra/devices.seed.json`. |
 | `PING_PRIVILEGED` | `True` | | Raw ICMP sockets. `False` uses the unprivileged mode. |
@@ -515,7 +518,7 @@ are set in `infra/.env`; the others keep their defaults there. Both
 Two more are read when the frontend is built: `FRONTEND_API_BASE_URL` in
 `infra/.env` (Docker) and `VITE_API_BASE_URL` in `frontend/.env`
 (development). Both are the address of the API as the browser sees it, and
-default to `http://localhost:8000`.
+default to `http://localhost:8410`.
 
 **Monitoring settings.** These live in the database and are changed in
 Admin, Settings (or with `PATCH /api/settings`). The poll loop reads them at

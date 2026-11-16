@@ -44,7 +44,7 @@ Allow ten minutes.
    make seed-reset CHAOS=1
    ```
 
-3. Open <http://localhost:8080> and sign in as `admin` / `admin123`.
+3. Open <http://localhost:8411> and sign in as `admin` / `admin123`.
 4. Rehearse once. **Admin**, **Chaos**, "OT switch failure", **Run**. Open
    **Incidents** and wait for the incident. Back in **Chaos**, press
    **Restore all**, and check that **Incidents** says "All monitored devices

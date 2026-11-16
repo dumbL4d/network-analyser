@@ -648,13 +648,13 @@ def test_a_response_to_an_unlisted_origin_names_no_origin(client):
     [
         ["*"],
         ["http://*.example.com"],
-        ["localhost:8080"],
-        ["ftp://localhost:8080"],
+        ["localhost:8411"],
+        ["ftp://localhost:8411"],
         ["http://"],
-        ["http://localhost:8080/"],
-        ["http://localhost:8080/app"],
+        ["http://localhost:8411/"],
+        ["http://localhost:8411/app"],
         ["http://a.example http://b.example"],
-        ["http://localhost:8080", "*"],
+        ["http://localhost:8411", "*"],
     ],
 )
 def test_cors_origins_must_be_exact_origins(origins):
@@ -663,7 +663,7 @@ def test_cors_origins_must_be_exact_origins(origins):
 
 
 def test_exact_origins_are_accepted():
-    origins = ["https://monitor.example.com", "http://10.0.0.5:8080"]
+    origins = ["https://monitor.example.com", "http://10.0.0.5:8411"]
 
     assert Settings(CORS_ORIGINS=origins).CORS_ORIGINS == origins
     assert Settings(CORS_ORIGINS=[]).CORS_ORIGINS == []  # no cross-origin access at all

@@ -1,10 +1,24 @@
 # Changelog
 
-What each commit on the branch `feat/tech-update` added, newest first. The
-branch starts from `main` at `4df7c97`. The number of backend tests is the
-size of the suite after that commit.
+What each commit since `4df7c97` added, newest first. They were made on the
+branch `feat/tech-update`, which has since been merged into `main`. The
+number of backend tests is the size of the suite after that commit.
 
-## feat: stagger pings, poll at a fixed rate and retry suspect devices
+## chore: merge upstream main (ports 8410/8411, both loopback origins)
+
+- Takes in upstream's `b54dd7e`. The backend now listens on port 8410 and
+  the frontend on 8411 (they were 8000 and 8080), and the API allows the
+  frontend under `localhost` and under `127.0.0.1`, which a browser treats as
+  two different origins.
+- Carried into what this branch had rewritten: the README and the docs, the
+  compose file, both `.env.example` files, and the address that the frontend
+  image's Content-Security-Policy is built with. `infra/README.md` stays
+  folded into the README.
+- `test_docs.py` now fails if one file names another port than the rest, or
+  if a CORS list the repository ships is not made of exact origins.
+- 1446 tests.
+
+## 12afb1e feat: stagger pings, poll at a fixed rate and retry suspect devices
 
 - **Staggered pings.** A device's pings are sent `ping_gap_ms` apart without
   waiting for each other's replies, so a device that does not answer costs

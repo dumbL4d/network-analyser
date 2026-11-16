@@ -44,8 +44,8 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # VITE_API_BASE_URL that was baked into the bundle above, with the same
 # fallback as src/lib/api.ts. `nginx -t` fails the build on a broken result.
 ARG VITE_API_BASE_URL
-RUN origin="$(echo "${VITE_API_BASE_URL:-http://localhost:8000}" | sed -E 's|^([a-z]+://[^/]+).*|\1|')" \
+RUN origin="$(echo "${VITE_API_BASE_URL:-http://localhost:8410}" | sed -E 's|^([a-z]+://[^/]+).*|\1|')" \
     && sed -i "s|__API_ORIGIN__|${origin}|" /etc/nginx/conf.d/default.conf \
     && nginx -t
 
-EXPOSE 80
+EXPOSE 8411

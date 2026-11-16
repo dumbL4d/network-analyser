@@ -37,7 +37,7 @@ COPY scripts /app/scripts
 # (mounted to /app/data) overlays this in real deployments.
 RUN mkdir -p /app/data
 
-EXPOSE 8000
+EXPOSE 8410
 
 # No --reload: that flag is development-only and must not run in production.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8410"]

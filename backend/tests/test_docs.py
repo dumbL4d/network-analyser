@@ -4,6 +4,7 @@ The README's API table, ER diagram and configuration tables, the two
 ``.env.example`` files, and every link between the Markdown documents.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -76,6 +77,45 @@ def test_every_setting_is_in_the_readme_and_in_the_example_files():
     # COMPOSE_PROJECT_NAME is set by Compose itself.
     for name in set(re.findall(r"\$\{([A-Z_]+)", compose)) - {"COMPOSE_PROJECT_NAME"}:
         assert re.search(rf"^#? ?{name}=", infra_example, re.MULTILINE), f"{name} is not in infra/.env.example"
+
+
+def test_the_ports_agree_in_every_file_that_names_them():
+    api, web = "8410", "8411"  # what the backend listens on, and the frontend
+    compose = (REPO / "infra" / "docker-compose.yml").read_text()
+    frontend_image = (REPO / "frontend" / "Dockerfile").read_text()
+
+    assert f'"--port", "{api}"]' in (REPO / "backend" / "Dockerfile").read_text()
+    assert f'"{api}:{api}"' in compose and f'"{web}:{web}"' in compose
+    assert f"listen {web};" in (REPO / "frontend" / "nginx.conf").read_text()
+    assert f"EXPOSE {web}" in frontend_image
+    # The address of the API as the browser sees it: the bundle's fallback, the
+    # one the image's Content-Security-Policy is built with, and the stack's.
+    address = f"http://localhost:{api}"
+    assert f"|| '{address}'" in (REPO / "frontend" / "src" / "lib" / "api.ts").read_text()
+    assert f"${{VITE_API_BASE_URL:-{address}}}" in frontend_image
+    assert f"${{FRONTEND_API_BASE_URL:-{address}}}" in compose
+    assert f"FRONTEND_API_BASE_URL={address}" in (REPO / "infra" / ".env.example").read_text()
+    assert f"VITE_API_BASE_URL={address}" in (REPO / "frontend" / ".env.example").read_text()
+    assert f"<http://localhost:{web}>" in README and f"<{address}/api/health>" in README
+
+
+def test_the_shipped_cors_lists_are_exact_origins_under_both_names_of_the_loopback():
+    """``localhost`` and ``127.0.0.1`` are different origins to a browser, so
+    the lists the repository ships name the frontend under both."""
+
+    def listed(text: str, pattern: str) -> list[str]:
+        return json.loads(re.search(pattern, text, re.MULTILINE).group(1))
+
+    stack = listed((REPO / "infra" / "docker-compose.yml").read_text(), r"\$\{CORS_ORIGINS:-(\[.*?\])\}")
+    stack_example = listed((REPO / "infra" / ".env.example").read_text(), r"^CORS_ORIGINS=(.*)$")
+    development = listed((REPO / "backend" / ".env.example").read_text(), r"^CORS_ORIGINS=(.*)$")
+
+    for origins in (stack, development):
+        assert Settings(CORS_ORIGINS=origins).CORS_ORIGINS == origins  # or the backend would not start
+    assert stack == stack_example
+    assert set(stack) == {f"http://{name}:{port}" for name in ("localhost", "127.0.0.1") for port in (5173, 8411)}
+    assert development == Settings.model_fields["CORS_ORIGINS"].default
+    assert set(development) == {"http://localhost:5173", "http://127.0.0.1:5173"}
 
 
 def _outside_code(text: str) -> str:

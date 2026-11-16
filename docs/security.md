@@ -14,7 +14,7 @@ injection has its own page, [chaos.md](chaos.md).
 
 The attacker considered here is **someone on the same network** as the
 monitor: a curious employee, a compromised laptop, a visitor on the plant
-Wi-Fi. They can reach the frontend (`:8080`) and the API (`:8000`), read the
+Wi-Fi. They can reach the frontend (`:8411`) and the API (`:8410`), read the
 README, and send any request they like. They are not root on the server and
 cannot read the database file.
 

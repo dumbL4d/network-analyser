@@ -776,28 +776,28 @@ flowchart LR
         S8["sim-ap-aisle-1 · .30"]
         S9["sim-ap-aisle-2 · .31"]
         S10["sim-scanner-1 · .40"]
-        BE["backend · 10.99.0.99<br/>:8000 · cap NET_RAW"]
+        BE["backend · 10.99.0.99<br/>:8410 · cap NET_RAW"]
     end
 
     BR["Browser"]
-    FE["frontend (nginx) · :8080<br/>not on warehouse-net — serves static bundle"]
+    FE["frontend (nginx) · :8411<br/>not on warehouse-net — serves static bundle"]
 
     BE -- "ICMP probes (all 12 sim-* stubs)" --> FW
     BE -- "ICMP" --> S2
     BE -- "ICMP" --> S3
     BE -- "ICMP" --> S6
     BE -- "ICMP" --> S9
-    BR -- "API + SSE :8000" --> BE
-    BR -- "GET bundle :8080" --> FE
+    BR -- "API + SSE :8410" --> BE
+    BR -- "GET bundle :8411" --> FE
     FE -.->|"no direct traffic<br/>(out-of-band)"| BE
 ```
 
 - **12 `sim-*` containers** — Alpine stubs that answer ICMP, standing in for
   warehouse hardware.
 - **`backend`** — FastAPI + SQLite; needs `CAP_NET_RAW` for raw ICMP sockets,
-  publishes `:8000`, persists the DB in the `backend-data` named volume, and
+  publishes `:8410`, persists the DB in the `backend-data` named volume, and
   mounts `infra/devices.seed.json` read-only as the topology source.
-- **`frontend`** — nginx serving the built SPA on `:8080`, with the security
+- **`frontend`** — nginx serving the built SPA on `:8411`, with the security
   headers (see [security.md](security.md)). It is deliberately not on
   `warehouse-net`: it never talks to the backend itself (the browser does),
   so attaching it adds nothing.
