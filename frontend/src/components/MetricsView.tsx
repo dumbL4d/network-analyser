@@ -1,3 +1,11 @@
+import {
+  Activity,
+  CircleAlert,
+  Gauge,
+  Radio,
+  Signal,
+  TrendingUp,
+} from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -10,8 +18,20 @@ import {
 } from 'recharts'
 
 import TimeRangeSelect from '@/components/TimeRangeSelect'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import DeviceTypeIcon from '@/components/ui/device-type-icon'
+import KpiCard from '@/components/ui/kpi-card'
+import PageHeader from '@/components/ui/page-header'
+import StatusBadge from '@/components/ui/status-badge'
+import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { useAllDeviceHistories } from '@/hooks/useAllDeviceHistories'
 import { useDevices } from '@/hooks/useDevices'
 import { usePolled } from '@/hooks/usePolled'
@@ -28,13 +48,17 @@ import {
   computePeak,
   computeReachabilityRatio,
 } from '@/lib/metrics'
-import { getStatusColor } from '@/lib/statusStyles'
 import { cn } from '@/lib/utils'
-import type { DeviceStatus, HistoryPoint, HistoryRange } from '@/types/device'
+import type {
+  DeviceOut,
+  DeviceStatus,
+  HistoryPoint,
+  HistoryRange,
+} from '@/types/device'
 
 /**
  * Minimal trend sparkline: a bare Recharts chart with no axes or labels,
- * sized to fit an inline table row (~100px wide). For bucketed history it
+ * sized to fit an inline table row (~120px wide). For bucketed history it
  * draws the average as the line over a shaded band (min–max for latency,
  * average–peak for loss and jitter). With a `threshold` it also draws where
  * "degraded" begins, as a dashed line, and scales so that the line is in view.
@@ -53,16 +77,19 @@ function Sparkline({
   const data = toChartData(history, metric)
   // Red line while the latest point got no reply; otherwise blue.
   const last = history.length ? history[history.length - 1].latency_ms : null
-  const stroke = last === null ? '#ef4444' : '#3b82f6'
+  const stroke = last === null ? '#f43f5e' : '#3b82f6'
+  const fillId = `spark-fill-${metric}`
 
   return (
-    <div className="h-8 w-24 shrink-0">
+    <div className="h-9 w-[118px] shrink-0">
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data}>
-          {/* Two separate children on purpose: Recharts does not look for
-              its components inside a fragment. And yAxisId is spelled out
-              because, with React 19, Recharts does not see the default when
-              it works out how far to extend the axis. */}
+          <defs>
+            <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={stroke} stopOpacity={0.18} />
+              <stop offset="100%" stopColor={stroke} stopOpacity={0} />
+            </linearGradient>
+          </defs>
           {threshold !== undefined && (
             <YAxis hide domain={metric === 'loss' ? [0, 100] : [0, 'auto']} />
           )}
@@ -81,16 +108,24 @@ function Sparkline({
               dataKey="band"
               stroke="none"
               fill={stroke}
-              fillOpacity={0.2}
+              fillOpacity={0.16}
               isAnimationActive={false}
               connectNulls={false}
             />
           )}
+          <Area
+            type="monotone"
+            dataKey="value"
+            stroke="none"
+            fill={`url(#${fillId})`}
+            isAnimationActive={false}
+            connectNulls={false}
+          />
           <Line
             type="monotone"
             dataKey="value"
             stroke={stroke}
-            strokeWidth={1.5}
+            strokeWidth={1.8}
             dot={false}
             isAnimationActive={false}
             connectNulls={false}
@@ -124,8 +159,8 @@ function Figure({
     <span
       data-testid={testId}
       className={cn(
-        'w-20 whitespace-nowrap text-right text-sm tabular-nums',
-        over && 'font-semibold text-amber-600',
+        'mono inline-block w-[72px] whitespace-nowrap text-right text-[12px]',
+        over ? 'font-semibold text-amber-600' : 'text-slate-700',
       )}
     >
       {value === null ? '—' : `${value.toFixed(digits)} ${unit}`}
@@ -133,18 +168,46 @@ function Figure({
   )
 }
 
-function StatusBadge({ status }: { status: DeviceStatus }) {
-  const color = getStatusColor(status)
+function DeviceCell({ device }: { device: DeviceOut }) {
   return (
-    <span
-      data-testid="status-badge"
-      className={cn(
-        'rounded-full px-2.5 py-0.5 text-xs font-medium uppercase text-white',
-        color.bg,
-      )}
-    >
-      {status}
-    </span>
+    <div className="flex items-center gap-2.5">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-slate-500">
+        <DeviceTypeIcon type={device.type} className="h-3.5 w-3.5" />
+      </span>
+      <div className="min-w-0">
+        <Link
+          to={`/devices/${device.id}`}
+          className="block truncate text-[12px] font-semibold text-slate-800 transition-colors hover:text-blue-600 hover:underline"
+        >
+          {device.name}
+        </Link>
+        <span className="mono mt-0.5 block truncate text-[9px] text-slate-400">
+          {device.id} · {device.zone}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function TabCardHeader({
+  title,
+  description,
+  range,
+  onRangeChange,
+}: {
+  title: string
+  description: string
+  range: HistoryRange
+  onRangeChange: (range: HistoryRange) => void
+}) {
+  return (
+    <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0 border-b border-slate-100 pb-4">
+      <div>
+        <CardTitle>{title}</CardTitle>
+        <p className="mt-1 text-[11px] text-slate-500">{description}</p>
+      </div>
+      <TimeRangeSelect value={range} onChange={onRangeChange} />
+    </CardHeader>
   )
 }
 
@@ -164,20 +227,30 @@ export default function MetricsView() {
 
   if (devicesLoading) {
     return (
-      <div className="p-8">
-        <h1 className="text-xl font-semibold">Metrics</h1>
-        <p className="mt-4 text-sm text-muted-foreground">Loading devices…</p>
+      <div className="page-shell">
+        <PageHeader
+          eyebrow={
+            <span className="label-caps flex items-center gap-1.5">
+              <Activity className="h-3 w-3" /> Observability
+            </span>
+          }
+          title="Metrics"
+          description="Live latency trends and a fleet-wide status overview."
+        />
+        <Card className="p-10 text-center text-[12px] text-slate-500">
+          Loading devices…
+        </Card>
       </div>
     )
   }
 
   if (devicesError) {
     return (
-      <div className="p-8">
-        <h1 className="text-xl font-semibold">Metrics</h1>
-        <p className="mt-4 text-sm text-red-600">
+      <div className="page-shell">
+        <PageHeader title="Metrics" />
+        <Card className="border-rose-200 p-6 text-[12px] text-rose-700">
           Failed to load devices: {devicesError}
-        </p>
+        </Card>
       </div>
     )
   }
@@ -231,239 +304,395 @@ export default function MetricsView() {
     a.name.localeCompare(b.name),
   )
 
+  const liveStatuses = devices.map(
+    (device) => statuses[device.id]?.status ?? 'unknown',
+  )
+  const healthyCount = liveStatuses.filter((status) => status === 'healthy').length
+  const issueCount = liveStatuses.filter(
+    (status) => status === 'degraded' || status === 'down',
+  ).length
+  const medianLive = computeMedianLatency(
+    devices.map((device) => ({
+      latency_ms: statuses[device.id]?.latency_ms ?? null,
+    })),
+  )
+  const meanLoss = computeMean(
+    devices.map((device) => statuses[device.id]?.loss_pct ?? null),
+  )
+
   return (
-    <div className="p-8">
-      <div className="mb-4">
-        <h1 className="text-xl font-semibold">Metrics</h1>
-        <p className="text-sm text-muted-foreground">
-          Live latency trends and a fleet-wide status overview.
-        </p>
+    <div className="page-shell">
+      <PageHeader
+        eyebrow={
+          <span className="label-caps flex items-center gap-1.5">
+            <Activity className="h-3 w-3" /> Observability
+            <span className="h-1 w-1 rounded-full bg-slate-300" />
+            Fleet telemetry
+          </span>
+        }
+        title="Metrics"
+        description="Live latency trends, packet quality, and a fleet-wide status overview."
+        actions={
+          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-card">
+            <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-emerald-500" />
+            <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">
+              Streaming
+            </span>
+          </div>
+        }
+      />
+
+      <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <KpiCard
+          label="Fleet health"
+          value={`${healthyCount}/${devices.length}`}
+          hint={
+            issueCount === 0
+              ? 'All monitored devices are healthy'
+              : `${issueCount} device${issueCount === 1 ? '' : 's'} need attention`
+          }
+          icon={Signal}
+          tone="emerald"
+        />
+        <KpiCard
+          label="Median latency"
+          value={medianLive === null ? '—' : `${medianLive.toFixed(1)} ms`}
+          hint="Live estimate across reporting devices"
+          icon={Gauge}
+          tone="blue"
+        />
+        <KpiCard
+          label="Mean packet loss"
+          value={meanLoss === null ? '—' : `${meanLoss.toFixed(1)}%`}
+          hint="Latest probe cycle, all devices"
+          icon={TrendingUp}
+          tone={meanLoss !== null && meanLoss > 0 ? 'amber' : 'neutral'}
+        />
+        <KpiCard
+          label="Monitoring"
+          value={issueCount === 0 ? 'Nominal' : 'Attention'}
+          hint={
+            settings
+              ? `${settings.poll_interval_seconds}s poll · ${settings.pings_per_cycle} pings/cycle`
+              : 'Awaiting monitoring settings'
+          }
+          icon={Radio}
+          tone={issueCount === 0 ? 'emerald' : 'rose'}
+        />
       </div>
 
       <Tabs defaultValue="status">
-        <TabsList>
-          <TabsTrigger value="latency" data-testid="latency-tab">Latency</TabsTrigger>
-          <TabsTrigger value="quality" data-testid="quality-tab">Loss &amp; jitter</TabsTrigger>
-          <TabsTrigger value="status" data-testid="status-tab">Status Overview</TabsTrigger>
+        <TabsList className="mb-5">
+          <TabsTrigger value="latency" data-testid="latency-tab">
+            Latency
+          </TabsTrigger>
+          <TabsTrigger value="quality" data-testid="quality-tab">
+            Loss &amp; jitter
+          </TabsTrigger>
+          <TabsTrigger value="status" data-testid="status-tab">
+            Status Overview
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="latency">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0">
-              <div className="flex items-center gap-3">
-                <CardTitle className="text-base">Per-device latency</CardTitle>
-                <TimeRangeSelect value={range} onChange={setRange} />
+          <Card className="overflow-hidden">
+            <TabCardHeader
+              title="Per-device latency"
+              description="Worst reachability first. Sparklines show the selected window."
+              range={range}
+              onRangeChange={setRange}
+            />
+            <div>
+              <Table className="table-density">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[34%]">Device</TableHead>
+                    <TableHead>Live trend</TableHead>
+                    <TableHead className="text-right">Median</TableHead>
+                    <TableHead className="text-right">Reachability</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {historiesError ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-rose-600">
+                        Failed to load latency history: {historiesError}
+                      </TableCell>
+                    </TableRow>
+                  ) : historiesLoading && !hasAnyHistory ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-slate-500">
+                        Loading latency history…
+                      </TableCell>
+                    </TableRow>
+                  ) : !hasAnyHistory ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-slate-500">
+                        {range === 'live'
+                          ? 'No history yet — waiting for the next poll cycle.'
+                          : 'No data in this time range yet.'}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    latencyRows.map(
+                      ({ device, history, median, reachability }) => (
+                        <TableRow key={device.id} data-testid="latency-row">
+                          <TableCell>
+                            <DeviceCell device={device} />
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-3">
+                              <Sparkline history={history} bucketed={bucketed} />
+                              <span className="hidden text-[10px] text-slate-400 xl:inline">
+                                {history.length} pts
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span
+                              data-testid="median"
+                              className="mono text-[12px] font-medium text-slate-700"
+                            >
+                              {median === null ? '—' : `${median.toFixed(2)} ms`}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span
+                              data-testid="reachability"
+                              className={cn(
+                                'mono inline-flex min-w-12 justify-end rounded-md px-1.5 py-0.5 text-[11px] font-semibold',
+                                reachability >= 99
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : reachability >= 90
+                                    ? 'bg-amber-50 text-amber-700'
+                                    : 'bg-rose-50 text-rose-700',
+                              )}
+                            >
+                              {reachability}%
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ),
+                    )
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            {hasAnyHistory && (
+              <div className="flex items-center justify-between border-t border-slate-100 px-5 py-2.5">
+                <p className="text-[10px] text-slate-400">
+                  Resolution: {describeResolution(resolution)}
+                </p>
+                <p className="text-[10px] text-slate-400">
+                  Sorted by reachability · lowest first
+                </p>
               </div>
-              <div className="flex gap-8 text-xs text-muted-foreground">
-                <span>Median</span>
-                <span>Reachability</span>
-              </div>
-            </CardHeader>
-            <CardContent className="divide-y">
-              {historiesError ? (
-                <p className="py-4 text-sm text-red-600">
-                  Failed to load latency history: {historiesError}
-                </p>
-              ) : historiesLoading && !hasAnyHistory ? (
-                <p className="py-4 text-sm text-muted-foreground">
-                  Loading latency history…
-                </p>
-              ) : !hasAnyHistory ? (
-                <p className="py-4 text-sm text-muted-foreground">
-                  {range === 'live'
-                    ? 'No history yet — waiting for the next poll cycle.'
-                    : 'No data in this time range yet.'}
-                </p>
-              ) : (
-                latencyRows.map(({ device, history, median, reachability }) => (
-                  <div
-                    key={device.id}
-                    data-testid="latency-row"
-                    className="flex items-center justify-between gap-4 py-2"
-                  >
-                    <Link
-                      to={`/devices/${device.id}`}
-                      className="w-44 truncate text-sm font-medium transition-colors hover:text-foreground hover:underline"
-                    >
-                      {device.name}
-                    </Link>
-                    <div className="flex items-center gap-6">
-                      <Sparkline history={history} bucketed={bucketed} />
-                      <span
-                        data-testid="median"
-                        className="w-20 text-right text-sm tabular-nums"
-                      >
-                        {median === null ? '—' : `${median.toFixed(2)} ms`}
-                      </span>
-                      <span
-                        data-testid="reachability"
-                        className="w-12 text-right text-sm tabular-nums"
-                      >
-                        {reachability}%
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </CardContent>
+            )}
           </Card>
-          {hasAnyHistory && (
-            <p
-              data-testid="history-resolution"
-              className="mt-2 text-xs text-muted-foreground"
-            >
-              Resolution: {describeResolution(resolution)}
-            </p>
-          )}
         </TabsContent>
 
         <TabsContent value="quality">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0">
-              <div className="flex items-center gap-3">
-                <CardTitle className="text-base">
-                  Per-device packet loss and jitter
-                </CardTitle>
-                <TimeRangeSelect value={range} onChange={setRange} />
+          <Card className="overflow-hidden">
+            <TabCardHeader
+              title="Packet loss & jitter"
+              description="Amber values are at or above the configured degradation threshold."
+              range={range}
+              onRangeChange={setRange}
+            />
+            <Table className="table-density">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[26%]">Device</TableHead>
+                  <TableHead>Loss trend</TableHead>
+                  <TableHead className="text-right">Mean</TableHead>
+                  <TableHead className="text-right">Peak</TableHead>
+                  <TableHead>Jitter trend</TableHead>
+                  <TableHead className="text-right">Mean</TableHead>
+                  <TableHead className="text-right">Peak</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {historiesError ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-rose-600">
+                      Failed to load history: {historiesError}
+                    </TableCell>
+                  </TableRow>
+                ) : historiesLoading && !hasAnyHistory ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-slate-500">
+                      Loading history…
+                    </TableCell>
+                  </TableRow>
+                ) : !hasAnyHistory ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-slate-500">
+                      {range === 'live'
+                        ? 'No history yet — waiting for the next poll cycle.'
+                        : 'No data in this time range yet.'}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  qualityRows.map((row) => (
+                    <TableRow key={row.device.id} data-testid="quality-row">
+                      <TableCell>
+                        <DeviceCell device={row.device} />
+                      </TableCell>
+                      <TableCell>
+                        <Sparkline
+                          history={row.history}
+                          bucketed={bucketed}
+                          metric="loss"
+                          threshold={settings?.loss_warn_pct}
+                        />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Figure
+                          value={row.lossMean}
+                          unit="%"
+                          digits={1}
+                          threshold={settings?.loss_warn_pct}
+                          testId="loss-mean"
+                        />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Figure
+                          value={row.lossPeak}
+                          unit="%"
+                          digits={0}
+                          threshold={settings?.loss_warn_pct}
+                          testId="loss-peak"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Sparkline
+                          history={row.history}
+                          bucketed={bucketed}
+                          metric="jitter"
+                          threshold={settings?.jitter_warn_ms}
+                        />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Figure
+                          value={row.jitterMean}
+                          unit="ms"
+                          digits={2}
+                          threshold={settings?.jitter_warn_ms}
+                          testId="jitter-mean"
+                        />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Figure
+                          value={row.jitterPeak}
+                          unit="ms"
+                          digits={2}
+                          threshold={settings?.jitter_warn_ms}
+                          testId="jitter-peak"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+            {hasAnyHistory && (
+              <div className="border-t border-slate-100 px-5 py-2.5">
+                <p className="text-[10px] text-slate-400">
+                  Dashed line: where a device counts as degraded
+                  {settings
+                    ? ` (${settings.loss_warn_pct}% loss, ${settings.jitter_warn_ms} ms jitter)`
+                    : ''}
+                  . Resolution: {describeResolution(resolution, 'loss')}
+                </p>
               </div>
-              <div className="flex gap-6 text-xs text-muted-foreground">
-                <span className="w-24 text-center">Loss</span>
-                <span className="w-20 text-right">Mean</span>
-                <span className="w-20 text-right">Peak</span>
-                <span className="w-24 text-center">Jitter</span>
-                <span className="w-20 text-right">Mean</span>
-                <span className="w-20 text-right">Peak</span>
-              </div>
-            </CardHeader>
-            <CardContent className="divide-y">
-              {historiesError ? (
-                <p className="py-4 text-sm text-red-600">
-                  Failed to load history: {historiesError}
-                </p>
-              ) : historiesLoading && !hasAnyHistory ? (
-                <p className="py-4 text-sm text-muted-foreground">
-                  Loading history…
-                </p>
-              ) : !hasAnyHistory ? (
-                <p className="py-4 text-sm text-muted-foreground">
-                  {range === 'live'
-                    ? 'No history yet — waiting for the next poll cycle.'
-                    : 'No data in this time range yet.'}
-                </p>
-              ) : (
-                qualityRows.map((row) => (
-                  <div
-                    key={row.device.id}
-                    data-testid="quality-row"
-                    className="flex items-center justify-between gap-4 py-2"
-                  >
-                    <Link
-                      to={`/devices/${row.device.id}`}
-                      className="w-44 truncate text-sm font-medium transition-colors hover:text-foreground hover:underline"
-                    >
-                      {row.device.name}
-                    </Link>
-                    <div className="flex items-center gap-6">
-                      <Sparkline
-                        history={row.history}
-                        bucketed={bucketed}
-                        metric="loss"
-                        threshold={settings?.loss_warn_pct}
-                      />
-                      <Figure
-                        value={row.lossMean}
-                        unit="%"
-                        digits={1}
-                        threshold={settings?.loss_warn_pct}
-                        testId="loss-mean"
-                      />
-                      <Figure
-                        value={row.lossPeak}
-                        unit="%"
-                        digits={0}
-                        threshold={settings?.loss_warn_pct}
-                        testId="loss-peak"
-                      />
-                      <Sparkline
-                        history={row.history}
-                        bucketed={bucketed}
-                        metric="jitter"
-                        threshold={settings?.jitter_warn_ms}
-                      />
-                      <Figure
-                        value={row.jitterMean}
-                        unit="ms"
-                        digits={2}
-                        threshold={settings?.jitter_warn_ms}
-                        testId="jitter-mean"
-                      />
-                      <Figure
-                        value={row.jitterPeak}
-                        unit="ms"
-                        digits={2}
-                        threshold={settings?.jitter_warn_ms}
-                        testId="jitter-peak"
-                      />
-                    </div>
-                  </div>
-                ))
-              )}
-            </CardContent>
+            )}
           </Card>
-          {hasAnyHistory && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Dashed line: where a device counts as degraded
-              {settings
-                ? ` (${settings.loss_warn_pct}% loss, ${settings.jitter_warn_ms} ms jitter)`
-                : ''}
-              . Resolution: {describeResolution(resolution, 'loss')}
-            </p>
-          )}
         </TabsContent>
 
         <TabsContent value="status">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Status Overview</CardTitle>
+          <Card className="overflow-hidden">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-slate-100 pb-4">
+              <div>
+                <CardTitle>Status Overview</CardTitle>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Current confirmed state for every monitored device.
+                </p>
+              </div>
+              <span className="mono rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-medium text-slate-500">
+                {devices.length} devices
+              </span>
             </CardHeader>
-            <CardContent className="divide-y">
-              {statusRows.map((device) => {
-                const status: DeviceStatus =
-                  statuses[device.id]?.status ?? 'unknown'
-                const latency = statuses[device.id]?.latency_ms ?? null
-                return (
-                  <div
-                    key={device.id}
-                    data-testid="status-row"
-                    className="flex items-center justify-between gap-4 py-2"
-                  >
-                    <div className="flex w-44 items-center gap-3">
-                      <span
-                        className={cn(
-                          'h-2.5 w-2.5 shrink-0 rounded-full',
-                          getStatusColor(status).bg,
-                        )}
-                      />
-                      <Link
-                        to={`/devices/${device.id}`}
-                        className="truncate text-sm font-medium transition-colors hover:text-foreground hover:underline"
-                      >
-                        {device.name}
-                      </Link>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <StatusBadge status={status} />
-                      <span className="w-20 text-right text-sm tabular-nums text-muted-foreground">
+            <Table className="table-density">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[34%]">Device</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Latency</TableHead>
+                  <TableHead className="text-right">Loss</TableHead>
+                  <TableHead className="text-right">Jitter</TableHead>
+                  <TableHead className="text-right">Zone</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {statusRows.map((device) => {
+                  const status: DeviceStatus =
+                    statuses[device.id]?.status ?? 'unknown'
+                  const latency = statuses[device.id]?.latency_ms ?? null
+                  return (
+                    <TableRow key={device.id} data-testid="status-row">
+                      <TableCell>
+                        <div className="flex items-center gap-2.5">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-slate-500">
+                            <DeviceTypeIcon
+                              type={device.type}
+                              className="h-3.5 w-3.5"
+                            />
+                          </span>
+                          <Link
+                            to={`/devices/${device.id}`}
+                            className="truncate text-[12px] font-semibold text-slate-800 transition-colors hover:text-blue-600 hover:underline"
+                          >
+                            {device.name}
+                          </Link>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge status={status} testId="status-badge" />
+                      </TableCell>
+                      <TableCell className="mono text-right text-[12px] text-slate-600">
                         {formatLatency(latency)}
-                      </span>
-                    </div>
-                  </div>
-                )
-              })}
-            </CardContent>
+                      </TableCell>
+                      <TableCell className="mono text-right text-[12px] text-slate-600">
+                        {statuses[device.id]?.loss_pct === null ||
+                        statuses[device.id]?.loss_pct === undefined
+                          ? '—'
+                          : `${statuses[device.id].loss_pct?.toFixed(0)}%`}
+                      </TableCell>
+                      <TableCell className="mono text-right text-[12px] text-slate-600">
+                        {statuses[device.id]?.jitter_ms === null ||
+                        statuses[device.id]?.jitter_ms === undefined
+                          ? '—'
+                          : `${statuses[device.id].jitter_ms?.toFixed(1)} ms`}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.05em] text-slate-500">
+                          {device.zone}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
           </Card>
         </TabsContent>
       </Tabs>
+
+      <div className="mt-4 flex items-center gap-1.5 text-[10px] text-slate-400">
+        <CircleAlert className="h-3 w-3" />
+        Metrics are derived from the latest completed probe cycle. Values
+        arrive over the live status stream.
+      </div>
     </div>
   )
 }

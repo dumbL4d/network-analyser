@@ -1,3 +1,12 @@
+import {
+  ArrowLeft,
+  ArrowRight,
+  Gauge,
+  Network,
+  Sparkles,
+  Timer,
+  TrendingDown,
+} from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
@@ -14,7 +23,11 @@ import {
 } from 'recharts'
 
 import TimeRangeSelect from '@/components/TimeRangeSelect'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import DeviceTypeIcon from '@/components/ui/device-type-icon'
+import KpiCard from '@/components/ui/kpi-card'
+import PageHeader from '@/components/ui/page-header'
+import { statusToneClasses } from '@/components/ui/status-badge'
+import { Card } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useDeviceHistory } from '@/hooks/useDeviceHistory'
 import { useDevices } from '@/hooks/useDevices'
@@ -44,18 +57,36 @@ function BackToTopology() {
   return (
     <Link
       to="/"
-      className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+      className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500 transition-colors hover:text-slate-900"
     >
-      ← Back to Topology
+      <ArrowLeft className="h-3.5 w-3.5" />
+      Back to Topology
     </Link>
   )
 }
 
-function InfoRow({ label, children }: { label: string; children: ReactNode }) {
+function InfoRow({
+  label,
+  children,
+  mono,
+}: {
+  label: string
+  children: ReactNode
+  mono?: boolean
+}) {
   return (
-    <div className="flex items-start justify-between gap-4 py-1.5 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right font-medium">{children}</span>
+    <div className="flex items-start justify-between gap-4 py-2.5 text-[12px]">
+      <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.1em] text-slate-400">
+        {label}
+      </span>
+      <span
+        className={cn(
+          'text-right font-medium text-slate-700',
+          mono && 'mono text-[11px]',
+        )}
+      >
+        {children}
+      </span>
     </div>
   )
 }
@@ -122,19 +153,21 @@ function HistoryChart({
 
   // Simple heuristic: red when the most recent point got no reply.
   const lastPoint = history.length ? history[history.length - 1] : null
-  const stroke = lastPoint?.latency_ms === null ? '#ef4444' : '#3b82f6'
+  const stroke = lastPoint?.latency_ms === null ? '#f43f5e' : '#3b82f6'
 
   return (
-    <div className="h-64 w-full">
+    <div className="h-[320px] w-full">
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
           data={chartData}
-          margin={{ top: 8, right: 16, bottom: 8, left: 0 }}
+          margin={{ top: 12, right: 16, bottom: 8, left: 0 }}
         >
-          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+          <CartesianGrid stroke="#f1f5f9" strokeDasharray="4 4" vertical={false} />
           <XAxis
             dataKey="index"
-            tick={{ fontSize: 11 }}
+            tick={{ fontSize: 10, fill: '#94a3b8' }}
+            axisLine={false}
+            tickLine={false}
             minTickGap={40}
             tickFormatter={(index: number) =>
               chartData[index]
@@ -143,7 +176,9 @@ function HistoryChart({
             }
           />
           <YAxis
-            tick={{ fontSize: 11 }}
+            tick={{ fontSize: 10, fill: '#94a3b8' }}
+            axisLine={false}
+            tickLine={false}
             width={52}
             unit={spec.unit}
             // Loss is a percentage: always the full scale, so that 5% does
@@ -151,6 +186,13 @@ function HistoryChart({
             domain={metric === 'loss' ? [0, 100] : [0, 'auto']}
           />
           <Tooltip
+            cursor={{ stroke: '#cbd5e1', strokeDasharray: '4 4' }}
+            contentStyle={{
+              border: '1px solid #e2e8f0',
+              borderRadius: 10,
+              fontSize: 11,
+              boxShadow: '0 8px 24px -12px rgb(15 23 42 / 0.25)',
+            }}
             formatter={(value, name) => {
               if (name === 'band') {
                 const [low, high] = value as [number, number]
@@ -207,10 +249,10 @@ function HistoryChart({
                 x2={span.to}
                 xAxisId={0}
                 yAxisId={0}
-                fill="#c026d3"
-                fillOpacity={0.12}
-                stroke="#c026d3"
-                strokeOpacity={0.45}
+                fill="#a855f7"
+                fillOpacity={0.1}
+                stroke="#a855f7"
+                strokeOpacity={0.35}
               />
             ) : (
               <ReferenceLine
@@ -218,7 +260,7 @@ function HistoryChart({
                 x={span.from}
                 xAxisId={0}
                 yAxisId={0}
-                stroke="#c026d3"
+                stroke="#a855f7"
                 strokeDasharray="2 2"
               />
             ),
@@ -230,7 +272,7 @@ function HistoryChart({
               dataKey="band"
               stroke="none"
               fill={stroke}
-              fillOpacity={0.18}
+              fillOpacity={0.14}
               isAnimationActive={false}
               connectNulls={false}
             />
@@ -262,7 +304,9 @@ function DownstreamList({
   const children = devices.filter((device) => device.parent_id === deviceId)
 
   if (children.length === 0) {
-    return <p className="text-sm text-muted-foreground">No downstream devices.</p>
+    return (
+      <p className="text-[11px] text-slate-500">No downstream devices.</p>
+    )
   }
 
   return (
@@ -274,13 +318,26 @@ function DownstreamList({
           <li key={child.id}>
             <Link
               to={`/devices/${child.id}`}
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-muted"
+              className="group flex items-center gap-2.5 rounded-lg px-2 py-2 transition-colors hover:bg-slate-50"
             >
-              <span className={cn('h-2.5 w-2.5 rounded-full', color.bg)} />
-              <span className="font-medium">{child.name}</span>
-              <span className="ml-auto text-xs text-muted-foreground">
-                {childStatus}
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-slate-500">
+                <DeviceTypeIcon type={child.type} className="h-3 w-3" />
               </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium text-slate-800 group-hover:text-blue-600">
+                  {child.name}
+                </span>
+                <span className="mono block truncate text-[9px] text-slate-400">
+                  {child.id}
+                </span>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className={cn('h-1.5 w-1.5 rounded-full', color.bg)} />
+                <span className="text-[10px] capitalize text-slate-500">
+                  {childStatus}
+                </span>
+              </span>
+              <ArrowRight className="h-3 w-3 text-slate-300 group-hover:text-blue-500" />
             </Link>
           </li>
         )
@@ -321,44 +378,49 @@ export default function DeviceDetailView() {
 
   const device = devices.find((item) => item.id === deviceId)
   const status = statuses[deviceId]?.status ?? 'unknown'
-  const color = getStatusColor(status)
+  const tone = statusToneClasses(status)
 
   if (devicesLoading) {
     return (
-      <div className="p-8">
+      <div className="page-shell">
         <BackToTopology />
-        <p className="mt-6 text-sm text-muted-foreground">Loading device…</p>
+        <Card className="mt-5 p-10 text-center text-[12px] text-slate-500">
+          Loading device…
+        </Card>
       </div>
     )
   }
 
   if (devicesError) {
     return (
-      <div className="p-8">
+      <div className="page-shell">
         <BackToTopology />
-        <p className="mt-6 text-sm text-red-600">
+        <Card className="mt-5 border-rose-200 p-6 text-[12px] text-rose-700">
           Failed to load devices: {devicesError}
-        </p>
+        </Card>
       </div>
     )
   }
 
   if (!device) {
     return (
-      <div className="p-8">
+      <div className="page-shell">
         <BackToTopology />
-        <div className="mt-6">
-          <h1 className="text-xl font-semibold">Device not found</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+        <Card className="mt-5 p-10 text-center">
+          <p className="text-[16px] font-semibold text-slate-900">
+            Device not found
+          </p>
+          <p className="mt-1 text-[12px] text-slate-500">
             No device with id “{deviceId}” exists.
           </p>
           <Link
             to="/"
-            className="mt-4 inline-block rounded-md border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted"
+            className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 shadow-card transition-colors hover:bg-slate-50"
           >
+            <ArrowLeft className="h-3 w-3" />
             Back to Topology
           </Link>
-        </div>
+        </Card>
       </div>
     )
   }
@@ -368,118 +430,223 @@ export default function DeviceDetailView() {
     : null
   const notes = device.notes.trim() === '' ? 'No notes' : device.notes
 
+  const latency = statuses[deviceId]?.latency_ms ?? null
+  const loss = statuses[deviceId]?.loss_pct ?? null
+  const jitter = statuses[deviceId]?.jitter_ms ?? null
+  const lossOver =
+    loss !== null &&
+    settings !== null &&
+    loss >= settings.loss_warn_pct
+  const jitterOver =
+    jitter !== null &&
+    settings !== null &&
+    jitter >= settings.jitter_warn_ms
+
   return (
-    <div className="p-8">
+    <div className="page-shell">
       <BackToTopology />
-      <div className="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0">
-            <CardTitle>{device.name}</CardTitle>
+
+      <div className="mt-3">
+        <PageHeader
+          eyebrow={
+            <span className="label-caps flex items-center gap-1.5">
+              <DeviceTypeIcon type={device.type} className="h-3 w-3" />
+              {device.type}
+              <span className="h-1 w-1 rounded-full bg-slate-300" />
+              {device.zone}
+            </span>
+          }
+          title={device.name}
+          description={`${device.id} · ${device.ip} · ping port ${device.ping_port}`}
+          actions={
             <span
               data-testid="device-status-badge"
               className={cn(
-                'rounded-full px-2.5 py-0.5 text-xs font-medium uppercase text-white',
-                color.bg,
+                'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]',
+                tone.badge,
               )}
             >
+              <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} />
               {status}
             </span>
-          </CardHeader>
-          <CardContent className="divide-y">
-            <InfoRow label="Type">{device.type}</InfoRow>
-            <InfoRow label="Zone">{device.zone}</InfoRow>
-            <InfoRow label="IP">{device.ip}</InfoRow>
-            <InfoRow label="Ping port">{device.ping_port}</InfoRow>
-            <InfoRow label="Current latency">
-              {formatReading(statuses[deviceId]?.latency_ms, 'ms')}
-            </InfoRow>
-            <InfoRow label="Packet loss">
-              <span data-testid="current-loss">
-                {formatReading(statuses[deviceId]?.loss_pct, '%', 0)}
-              </span>
-            </InfoRow>
-            <InfoRow label="Jitter">
-              <span data-testid="current-jitter">
-                {formatReading(statuses[deviceId]?.jitter_ms, 'ms')}
-              </span>
-            </InfoRow>
-            <InfoRow label="Anomaly (advisory)">
-              <span
-                data-testid="current-anomaly"
-                className={anomaly ? 'text-fuchsia-700' : 'text-muted-foreground'}
-              >
-                {anomaly ? describeAnomaly(anomaly) : 'None'}
-              </span>
-            </InfoRow>
-            <InfoRow label="Parent">
-              {device.parent_id ? (
-                <Link
-                  to={`/devices/${device.parent_id}`}
-                  className="text-blue-600 hover:underline"
-                >
-                  {parent?.name ?? device.parent_id}
-                </Link>
-              ) : (
-                <span className="text-muted-foreground">—</span>
-              )}
-            </InfoRow>
-            <InfoRow label="Notes">{notes}</InfoRow>
-          </CardContent>
-        </Card>
+          }
+        />
+      </div>
 
-        <div className="space-y-6">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <KpiCard
+          label="Current latency"
+          value={formatReading(latency, 'ms')}
+          hint="Average round-trip of the latest probe cycle"
+          icon={Gauge}
+          tone="blue"
+        />
+        <KpiCard
+          label="Packet loss"
+          value={
+            <span data-testid="current-loss">
+              {formatReading(loss, '%', 0)}
+            </span>
+          }
+          hint={
+            settings ? `Degraded at ${settings.loss_warn_pct}% or above` : 'Latest probe cycle'
+          }
+          icon={TrendingDown}
+          tone={lossOver ? 'amber' : 'neutral'}
+        />
+        <KpiCard
+          label="Jitter"
+          value={
+            <span data-testid="current-jitter">
+              {formatReading(jitter, 'ms')}
+            </span>
+          }
+          hint={
+            settings
+              ? `Degraded at ${settings.jitter_warn_ms} ms or above`
+              : 'Mean change between round-trips'
+          }
+          icon={Timer}
+          tone={jitterOver ? 'amber' : 'neutral'}
+        />
+        <KpiCard
+          label="Anomaly (advisory)"
+          value={
+            <span data-testid="current-anomaly" className="text-[13px] leading-snug">
+              {anomaly ? describeAnomaly(anomaly) : 'None'}
+            </span>
+          }
+          hint="Never changes status or opens an incident"
+          icon={Sparkles}
+          tone={anomaly ? 'violet' : 'neutral'}
+        />
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
+        <div className="space-y-5">
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <p className="text-[13px] font-semibold text-slate-900">
+                  Device
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  Inventory and topology position
+                </p>
+              </div>
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500">
+                <Network className="h-4 w-4" />
+              </span>
+            </div>
+            <div className="divide-y divide-slate-100 px-5 py-1">
+              <InfoRow label="Type">
+                <span className="capitalize">{device.type}</span>
+              </InfoRow>
+              <InfoRow label="Zone">{device.zone}</InfoRow>
+              <InfoRow label="IP" mono>
+                {device.ip}
+              </InfoRow>
+              <InfoRow label="Ping port" mono>
+                {device.ping_port}
+              </InfoRow>
+              <InfoRow label="Parent">
+                {device.parent_id ? (
+                  <Link
+                    to={`/devices/${device.parent_id}`}
+                    className="font-medium text-blue-600 hover:underline"
+                  >
+                    {parent?.name ?? device.parent_id}
+                  </Link>
+                ) : (
+                  <span className="text-slate-400">—</span>
+                )}
+              </InfoRow>
+              <InfoRow label="Notes">
+                <span className="font-normal text-slate-500">{notes}</span>
+              </InfoRow>
+            </div>
+          </Card>
+
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <p className="text-[13px] font-semibold text-slate-900">
+                Downstream devices
+              </p>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                Devices that depend on this one
+              </p>
+            </div>
+            <div className="p-3">
+              <DownstreamList
+                deviceId={deviceId}
+                devices={devices}
+                statuses={statuses}
+              />
+            </div>
+          </Card>
+        </div>
+
+        <Card className="overflow-hidden">
+          <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[13px] font-semibold text-slate-900">
                 {METRICS[metric].label} history
-              </CardTitle>
-              <TimeRangeSelect value={range} onChange={setRange} />
-            </CardHeader>
-            <CardContent>
-              <Tabs
-                value={metric}
-                onValueChange={(next) => setMetric(next as HistoryMetric)}
-                className="mb-3"
-              >
-                <TabsList>
-                  <TabsTrigger value="latency" data-testid="metric-latency">
-                    Latency
-                  </TabsTrigger>
-                  <TabsTrigger value="loss" data-testid="metric-loss">
-                    Packet loss
-                  </TabsTrigger>
-                  <TabsTrigger value="jitter" data-testid="metric-jitter">
-                    Jitter
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-              {historyError ? (
-                <p className="text-sm text-red-600">
-                  Failed to load history: {historyError}
-                </p>
-              ) : historyLoading && history.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  Loading history…
-                </p>
-              ) : history.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  {range === 'live'
-                    ? 'No history yet — waiting for the next poll cycle.'
-                    : 'No data in this time range yet.'}
-                </p>
-              ) : (
-                <div data-testid="latency-sparkline">
-                  <HistoryChart
-                    history={history}
-                    range={range}
-                    bucketed={resolution !== 'raw'}
-                    metric={metric}
-                    threshold={thresholds[metric]}
-                    anomalies={chartAnomalies}
-                  />
+              </p>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                Thresholds and anomaly markers are advisory overlays.
+              </p>
+            </div>
+            <TimeRangeSelect value={range} onChange={setRange} />
+          </div>
+
+          <div className="px-5 pt-4">
+            <Tabs
+              value={metric}
+              onValueChange={(next) => setMetric(next as HistoryMetric)}
+            >
+              <TabsList>
+                <TabsTrigger value="latency" data-testid="metric-latency">
+                  Latency
+                </TabsTrigger>
+                <TabsTrigger value="loss" data-testid="metric-loss">
+                  Packet loss
+                </TabsTrigger>
+                <TabsTrigger value="jitter" data-testid="metric-jitter">
+                  Jitter
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+
+          <div className="p-5">
+            {historyError ? (
+              <div className="rounded-lg border border-rose-200 bg-rose-50/60 px-4 py-8 text-center text-[12px] text-rose-700">
+                Failed to load history: {historyError}
+              </div>
+            ) : historyLoading && history.length === 0 ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-16 text-center text-[12px] text-slate-500">
+                Loading history…
+              </div>
+            ) : history.length === 0 ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-16 text-center text-[12px] text-slate-500">
+                {range === 'live'
+                  ? 'No history yet — waiting for the next poll cycle.'
+                  : 'No data in this time range yet.'}
+              </div>
+            ) : (
+              <div data-testid="latency-sparkline">
+                <HistoryChart
+                  history={history}
+                  range={range}
+                  bucketed={resolution !== 'raw'}
+                  metric={metric}
+                  threshold={thresholds[metric]}
+                  anomalies={chartAnomalies}
+                />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
                   <p
                     data-testid="history-resolution"
-                    className="mt-2 text-xs text-muted-foreground"
+                    className="text-[10px] text-slate-400"
                   >
                     Resolution: {describeResolution(resolution, metric)} ·{' '}
                     {history.length} points
@@ -487,30 +654,17 @@ export default function DeviceDetailView() {
                   {chartAnomalies.length > 0 && (
                     <p
                       data-testid="anomaly-legend"
-                      className="mt-1 text-xs text-fuchsia-700"
+                      className="flex items-center gap-1.5 text-[10px] text-violet-600"
                     >
-                      Shaded: what the anomaly detector found unusual
-                      (advisory: the status is not affected).
+                      <span className="h-2 w-2 rounded-sm bg-violet-400/40" />
+                      Shaded: anomaly detector (advisory only)
                     </p>
                   )}
                 </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Downstream devices</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <DownstreamList
-                deviceId={deviceId}
-                devices={devices}
-                statuses={statuses}
-              />
-            </CardContent>
-          </Card>
-        </div>
+              </div>
+            )}
+          </div>
+        </Card>
       </div>
     </div>
   )

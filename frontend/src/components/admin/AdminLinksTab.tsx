@@ -1,6 +1,8 @@
+import { Link2, Plus, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -36,7 +38,7 @@ function DeviceSelect({
 }) {
   return (
     <Select value={value} onValueChange={onChange}>
-      <SelectTrigger id={id} data-testid={testId} className="w-[240px]">
+      <SelectTrigger id={id} data-testid={testId} className="w-[220px]">
         <SelectValue placeholder="Select a device" />
       </SelectTrigger>
       <SelectContent>
@@ -116,54 +118,89 @@ export default function AdminLinksTab() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        {links.length} extra {links.length === 1 ? 'link' : 'links'}, in
-        addition to each device's parent. A link gives a device a second way
-        to the rest of the network.
-      </p>
+      <div className="flex items-start gap-2.5 rounded-xl border border-blue-200 bg-blue-50/60 px-3.5 py-3">
+        <Link2 className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+        <p className="text-[11px] leading-relaxed text-blue-800">
+          {links.length} extra {links.length === 1 ? 'link' : 'links'}, in
+          addition to each device&apos;s parent. A link gives a device a second
+          way to the rest of the network.
+        </p>
+      </div>
 
       {loadError !== null && (
-        <p className="text-sm text-red-600">Failed to load links: {loadError}</p>
-      )}
-
-      <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
-        <div className="space-y-1">
-          <Label htmlFor="link-device-a">Device</Label>
-          <DeviceSelect
-            id="link-device-a"
-            testId="link-device-a"
-            value={deviceA}
-            devices={devices}
-            onChange={setDeviceA}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="link-device-b">Linked to</Label>
-          <DeviceSelect
-            id="link-device-b"
-            testId="link-device-b"
-            value={deviceB}
-            devices={devices}
-            onChange={setDeviceB}
-          />
-        </div>
-        <Button
-          type="submit"
-          data-testid="link-add"
-          disabled={busy || deviceA === '' || deviceB === ''}
-        >
-          Add link
-        </Button>
-      </form>
-
-      {actionError !== null && (
-        <p data-testid="link-error" className="text-sm text-red-600">
-          {actionError}
+        <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
+          Failed to load links: {loadError}
         </p>
       )}
 
-      <div className="rounded-md border">
-        <Table>
+      <Card className="overflow-hidden">
+        <div className="border-b border-slate-100 px-5 py-4">
+          <p className="text-[13px] font-semibold text-slate-900">
+            Add redundant link
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            Create a second path between two devices to make the topology
+            tolerant of a single failure.
+          </p>
+        </div>
+        <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3 px-5 py-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="link-device-a">Device</Label>
+            <DeviceSelect
+              id="link-device-a"
+              testId="link-device-a"
+              value={deviceA}
+              devices={devices}
+              onChange={setDeviceA}
+            />
+          </div>
+          <span className="mb-2 hidden text-[11px] font-medium text-slate-400 sm:inline">
+            ↔
+          </span>
+          <div className="space-y-1.5">
+            <Label htmlFor="link-device-b">Linked to</Label>
+            <DeviceSelect
+              id="link-device-b"
+              testId="link-device-b"
+              value={deviceB}
+              devices={devices}
+              onChange={setDeviceB}
+            />
+          </div>
+          <Button
+            type="submit"
+            data-testid="link-add"
+            disabled={busy || deviceA === '' || deviceB === ''}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add link
+          </Button>
+        </form>
+        {actionError !== null && (
+          <p
+            data-testid="link-error"
+            className="border-t border-rose-100 bg-rose-50/60 px-5 py-2.5 text-[12px] text-rose-700"
+          >
+            {actionError}
+          </p>
+        )}
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <div>
+            <p className="text-[13px] font-semibold text-slate-900">
+              Extra links
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Redundant paths beyond the parent-child tree.
+            </p>
+          </div>
+          <span className="mono rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-medium text-slate-500">
+            {links.length}
+          </span>
+        </div>
+        <Table className="table-density">
           <TableHeader>
             <TableRow>
               <TableHead>Device</TableHead>
@@ -174,22 +211,34 @@ export default function AdminLinksTab() {
           <TableBody>
             {links.length === 0 ? (
               <TableRow data-testid="links-empty">
-                <TableCell colSpan={3} className="text-center text-muted-foreground">
+                <TableCell
+                  colSpan={3}
+                  className="py-10 text-center text-[12px] text-slate-500"
+                >
                   No extra links: the topology is a plain tree.
                 </TableCell>
               </TableRow>
             ) : (
               links.map((link) => (
                 <TableRow key={link.id} data-testid="link-row">
-                  <TableCell>{nameOf(link.device_a_id)}</TableCell>
-                  <TableCell>{nameOf(link.device_b_id)}</TableCell>
+                  <TableCell className="text-[12px] font-medium text-slate-800">
+                    {nameOf(link.device_a_id)}
+                  </TableCell>
+                  <TableCell>
+                    <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-600">
+                      <Link2 className="h-3 w-3 text-blue-500" />
+                      {nameOf(link.device_b_id)}
+                    </span>
+                  </TableCell>
                   <TableCell className="text-right">
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
+                      className="text-rose-600 hover:bg-rose-50 hover:text-rose-700"
                       disabled={busy}
                       onClick={() => void run(() => deleteLink(link.id))}
                     >
+                      <Trash2 className="h-3 w-3" />
                       Delete
                     </Button>
                   </TableCell>
@@ -198,7 +247,7 @@ export default function AdminLinksTab() {
             )}
           </TableBody>
         </Table>
-      </div>
+      </Card>
     </div>
   )
 }

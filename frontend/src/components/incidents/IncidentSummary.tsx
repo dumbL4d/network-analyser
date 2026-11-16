@@ -1,30 +1,15 @@
-import { Card, CardContent } from '@/components/ui/card'
+import {
+  BellOff,
+  Clock3,
+  ShieldAlert,
+  Timer,
+  Wrench,
+} from 'lucide-react'
+
+import KpiCard from '@/components/ui/kpi-card'
 import { useIncidentStats } from '@/hooks/useIncidentRecords'
 import { formatDuration } from '@/lib/format'
-
-function StatCard({
-  testId,
-  label,
-  value,
-  hint,
-}: {
-  testId: string
-  label: string
-  value: string
-  hint: string
-}) {
-  return (
-    <Card data-testid={testId}>
-      <CardContent className="p-4">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {label}
-        </p>
-        <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
-        <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
-      </CardContent>
-    </Card>
-  )
-}
+import { Card } from '@/components/ui/card'
 
 /** Summary cards above the Incidents tabs, from GET /api/stats/incidents. */
 export default function IncidentSummary() {
@@ -32,37 +17,55 @@ export default function IncidentSummary() {
 
   if (error !== null && stats === null) {
     return (
-      <p className="mb-6 text-sm text-red-600">
+      <Card className="mb-6 border-rose-200 p-4 text-[12px] text-rose-700">
         Failed to load incident statistics: {error}
-      </p>
+      </Card>
     )
   }
 
   return (
-    <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
-      <StatCard
+    <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <KpiCard
         testId="stat-incidents"
         label="Incidents"
         value={stats ? String(stats.count) : '—'}
-        hint={stats ? `${stats.open_count} not yet resolved` : 'all recorded'}
+        hint={
+          stats
+            ? `${stats.open_count} open · ${stats.resolved_count} resolved`
+            : 'All recorded incidents'
+        }
+        icon={ShieldAlert}
+        tone={stats && stats.open_count > 0 ? 'rose' : 'neutral'}
       />
-      <StatCard
+      <KpiCard
         testId="stat-detection"
         label="Mean detection delay"
         value={formatDuration(stats?.mean_detection_delay_seconds)}
-        hint="first failing probe to incident raised"
+        hint="First failing probe to incident raised"
+        icon={Timer}
+        tone="amber"
       />
-      <StatCard
+      <KpiCard
         testId="stat-mttr"
         label="MTTR"
         value={formatDuration(stats?.mttr_seconds)}
-        hint="incident raised to resolved, on average"
+        hint="Incident raised to resolved, on average"
+        icon={Wrench}
+        tone="blue"
       />
-      <StatCard
+      <KpiCard
         testId="stat-suppressed"
         label="Alerts suppressed"
         value={stats ? String(stats.alerts_suppressed) : '—'}
-        hint="collateral devices with no incident of their own"
+        hint="Collateral devices rolled into one incident"
+        icon={BellOff}
+        tone="violet"
+        footer={
+          <div className="mt-3 flex items-center gap-1.5 border-t border-slate-100 pt-2 text-[9px] font-medium uppercase tracking-[0.08em] text-slate-400">
+            <Clock3 className="h-3 w-3" />
+            Root-cause noise reduction
+          </div>
+        }
       />
     </div>
   )

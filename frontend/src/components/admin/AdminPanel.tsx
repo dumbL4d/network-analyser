@@ -1,9 +1,12 @@
+import { Settings2 } from 'lucide-react'
+
 import AdminAuditTab from '@/components/admin/AdminAuditTab'
 import AdminChaosTab from '@/components/admin/AdminChaosTab'
 import AdminDevicesTab from '@/components/admin/AdminDevicesTab'
 import AdminLinksTab from '@/components/admin/AdminLinksTab'
 import AdminSettingsTab from '@/components/admin/AdminSettingsTab'
 import AdminUsersTab from '@/components/admin/AdminUsersTab'
+import PageHeader from '@/components/ui/page-header'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 /**
@@ -13,16 +16,26 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
  */
 export default function AdminPanel() {
   return (
-    <div className="mx-auto max-w-5xl p-6">
-      <div className="mb-4">
-        <h2 className="text-2xl font-semibold tracking-tight">Admin Panel</h2>
-        <p className="text-sm text-muted-foreground">
-          Manage devices, links, monitoring settings, and users, inject
-          faults into the simulated network, and see who did what.
-        </p>
-      </div>
+    <div className="page-shell">
+      <PageHeader
+        eyebrow={
+          <span className="label-caps flex items-center gap-1.5">
+            <Settings2 className="h-3 w-3" /> Administration
+            <span className="h-1 w-1 rounded-full bg-slate-300" />
+            Admin only
+          </span>
+        }
+        title="Admin Panel"
+        description="Manage devices, links, monitoring settings, and users, inject faults into the simulated network, and see who did what."
+        actions={
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[10px] font-medium text-slate-500 shadow-card">
+            <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
+            Changes apply live
+          </span>
+        }
+      />
       <Tabs defaultValue="devices">
-        <TabsList>
+        <TabsList className="mb-5 flex-wrap">
           <TabsTrigger value="devices">Devices</TabsTrigger>
           <TabsTrigger value="links" data-testid="links-tab">
             Links

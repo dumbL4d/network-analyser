@@ -1,3 +1,4 @@
+import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import DeviceTypeIcon from '@/components/ui/device-type-icon'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -37,6 +39,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Card } from '@/components/ui/card'
 import {
   createDevice,
   deleteDevice,
@@ -90,6 +93,7 @@ function DeviceForm({
             onChange={(e) => setForm({ ...form, id: e.target.value })}
             disabled={editing}
             placeholder="kebab-case-id"
+            className="mono text-[12px]"
             required
           />
         </div>
@@ -130,6 +134,7 @@ function DeviceForm({
             value={form.ip}
             onChange={(e) => setForm({ ...form, ip: e.target.value })}
             placeholder="10.99.0.x"
+            className="mono text-[12px]"
             required
           />
         </div>
@@ -154,6 +159,7 @@ function DeviceForm({
             max={65535}
             value={form.pingPort}
             onChange={(e) => setForm({ ...form, pingPort: e.target.value })}
+            className="mono text-[12px]"
           />
         </div>
       </div>
@@ -180,7 +186,7 @@ function DeviceForm({
           </SelectContent>
         </Select>
         {editing && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-[11px] leading-relaxed text-slate-500">
             Backend PATCH ignores a null parent, so a parent can only be
             re-assigned to another device here, not removed.
           </p>
@@ -340,19 +346,34 @@ export default function AdminDevicesTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {devices.length} devices
-        </p>
-        <Button onClick={openAddDialog}>Add Device</Button>
-      </div>
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-[13px] font-semibold text-slate-900">
+              Managed devices
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Every device the monitor probes, with its place in the topology.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="mono rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-medium text-slate-500">
+              {devices.length} {devices.length === 1 ? 'device' : 'devices'}
+            </span>
+            <Button size="sm" onClick={openAddDialog}>
+              <Plus className="h-3.5 w-3.5" />
+              Add Device
+            </Button>
+          </div>
+        </div>
 
-      {loadError !== null && (
-        <p className="text-sm text-red-600">Failed to load devices: {loadError}</p>
-      )}
+        {loadError !== null && (
+          <p className="border-b border-rose-100 bg-rose-50/60 px-5 py-2.5 text-[12px] text-rose-700">
+            Failed to load devices: {loadError}
+          </p>
+        )}
 
-      <div className="rounded-md border">
-        <Table>
+        <Table className="table-density">
           <TableHeader>
             <TableRow>
               <TableHead>ID</TableHead>
@@ -367,38 +388,75 @@ export default function AdminDevicesTab() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
+                <TableCell
+                  colSpan={7}
+                  className="py-10 text-center text-[12px] text-slate-500"
+                >
                   Loading devices…
+                </TableCell>
+              </TableRow>
+            ) : devices.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={7}
+                  className="py-10 text-center text-[12px] text-slate-500"
+                >
+                  No devices registered yet.
                 </TableCell>
               </TableRow>
             ) : (
               devices.map((device) => (
                 <TableRow key={device.id}>
-                  <TableCell className="font-mono text-xs">{device.id}</TableCell>
-                  <TableCell>{device.name}</TableCell>
-                  <TableCell>{device.type}</TableCell>
-                  <TableCell>{device.zone}</TableCell>
-                  <TableCell className="font-mono text-xs">{device.ip}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="mono text-[11px] text-slate-500">
+                    {device.id}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-slate-500">
+                        <DeviceTypeIcon
+                          type={device.type}
+                          className="h-3 w-3"
+                        />
+                      </span>
+                      <span className="text-[12px] font-medium text-slate-800">
+                        {device.name}
+                      </span>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.05em] text-slate-500">
+                      {device.type}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-[12px] text-slate-600">
+                    {device.zone}
+                  </TableCell>
+                  <TableCell className="mono text-[11px] text-slate-600">
+                    {device.ip}
+                  </TableCell>
+                  <TableCell className="mono text-[11px] text-slate-400">
                     {device.parent_id ?? '—'}
                   </TableCell>
                   <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-1.5">
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => openEditDialog(device)}
                       >
+                        <Pencil className="h-3 w-3" />
                         Edit
                       </Button>
                       <Button
-                        variant="destructive"
+                        variant="ghost"
                         size="sm"
+                        className="text-rose-600 hover:bg-rose-50 hover:text-rose-700"
                         onClick={() => {
                           setDeleteTarget(device)
                           setDeleteError(null)
                         }}
                       >
+                        <Trash2 className="h-3 w-3" />
                         Delete
                       </Button>
                     </div>
@@ -408,13 +466,15 @@ export default function AdminDevicesTab() {
             )}
           </TableBody>
         </Table>
-      </div>
+      </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {editingDevice !== null ? `Edit ${editingDevice.id}` : 'Add Device'}
+              {editingDevice !== null
+                ? `Edit ${editingDevice.id}`
+                : 'Add Device'}
             </DialogTitle>
             <DialogDescription>
               {editingDevice !== null
@@ -423,12 +483,23 @@ export default function AdminDevicesTab() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <DeviceForm form={form} setForm={setForm} devices={devices} editing={editingDevice !== null} />
+            <DeviceForm
+              form={form}
+              setForm={setForm}
+              devices={devices}
+              editing={editingDevice !== null}
+            />
             {dialogError !== null && (
-              <p className="text-sm text-red-600">{dialogError}</p>
+              <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
+                {dialogError}
+              </p>
             )}
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDialogOpen(false)}
+              >
                 Cancel
               </Button>
               <Button type="submit" disabled={submitting}>
@@ -443,7 +514,12 @@ export default function AdminDevicesTab() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null)
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {deleteTarget?.name}?</AlertDialogTitle>
@@ -453,7 +529,9 @@ export default function AdminDevicesTab() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           {deleteError !== null && (
-            <p className="text-sm text-red-600">{deleteError}</p>
+            <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
+              {deleteError}
+            </p>
           )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>

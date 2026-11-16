@@ -1,7 +1,8 @@
+import { KeyRound } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/contexts/AuthContext'
@@ -45,16 +46,23 @@ export default function ChangePasswordForm() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Change My Password</CardTitle>
-        <CardDescription>
-          Rotate your own password. Your current session stays valid until its
-          natural expiry; only future logins require the new password.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <Card className="overflow-hidden">
+      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500">
+          <KeyRound className="h-3.5 w-3.5" />
+        </span>
+        <div>
+          <p className="text-[13px] font-semibold text-slate-900">
+            Change My Password
+          </p>
+          <p className="mt-0.5 max-w-2xl text-[11px] leading-relaxed text-slate-500">
+            Rotate your own password. Your current session stays valid until
+            its natural expiry; only future logins require the new password.
+          </p>
+        </div>
+      </div>
+      <form onSubmit={handleSubmit} className="space-y-4 p-5">
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="current-password">Current password</Label>
             <Input
@@ -77,15 +85,19 @@ export default function ChangePasswordForm() {
               required
             />
           </div>
-          {success !== null && (
-            <p className="text-sm text-green-600">{success}</p>
-          )}
-          {error !== null && <p className="text-sm text-red-600">{error}</p>}
-          <Button type="submit" disabled={submitting}>
-            {submitting ? 'Updating…' : 'Update password'}
-          </Button>
-        </form>
-      </CardContent>
+        </div>
+        {success !== null && (
+          <p className="text-[12px] font-medium text-emerald-700">{success}</p>
+        )}
+        {error !== null && (
+          <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
+            {error}
+          </p>
+        )}
+        <Button type="submit" disabled={submitting}>
+          {submitting ? 'Updating…' : 'Update password'}
+        </Button>
+      </form>
     </Card>
   )
 }

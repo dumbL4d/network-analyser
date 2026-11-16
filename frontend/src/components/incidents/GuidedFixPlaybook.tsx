@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowRight, Check, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -53,16 +54,22 @@ export default function GuidedFixPlaybook({
 
   if (loading) {
     return (
-      <div data-testid="playbook" className="mt-4 rounded-md border p-4">
-        <p className="text-sm text-muted-foreground">Loading playbook…</p>
+      <div
+        data-testid="playbook"
+        className="mt-4 rounded-xl border border-violet-200 bg-violet-50/40 p-4"
+      >
+        <p className="text-[12px] text-slate-500">Loading playbook…</p>
       </div>
     )
   }
 
   if (error !== null || playbook === null) {
     return (
-      <div data-testid="playbook" className="mt-4 rounded-md border p-4">
-        <p className="text-sm text-red-600">
+      <div
+        data-testid="playbook"
+        className="mt-4 rounded-xl border border-rose-200 bg-rose-50/50 p-4"
+      >
+        <p className="text-[12px] text-rose-700">
           Failed to load playbook: {error ?? 'Unknown error'}
         </p>
       </div>
@@ -74,24 +81,32 @@ export default function GuidedFixPlaybook({
   const progress = total === 0 ? 0 : ((safeStep + 1) / total) * 100
 
   return (
-    <div data-testid="playbook" className="mt-4 rounded-md border p-4">
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Guided fix — step {safeStep + 1} of {total}
-        </span>
-        <span className="text-xs text-muted-foreground">{progress.toFixed(0)}%</span>
-      </div>
-      <div
-        data-testid="playbook-progress"
-        className="h-2 w-full overflow-hidden rounded-full bg-muted"
-      >
+    <div
+      data-testid="playbook"
+      className="mt-4 overflow-hidden rounded-xl border border-violet-200 bg-violet-50/30"
+    >
+      <div className="border-b border-violet-100 bg-violet-50/60 px-4 py-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-violet-700">
+            <Sparkles className="h-3 w-3" />
+            Guided fix — step {safeStep + 1} of {total}
+          </span>
+          <span className="mono text-[10px] font-semibold text-violet-600">
+            {progress.toFixed(0)}%
+          </span>
+        </div>
         <div
-          className="h-full rounded-full bg-blue-600 transition-all duration-300"
-          style={{ width: `${progress}%` }}
-        />
+          data-testid="playbook-progress"
+          className="h-1.5 w-full overflow-hidden rounded-full bg-violet-200/60"
+        >
+          <div
+            className="h-full rounded-full bg-violet-600 transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
       </div>
 
-      <ol className="mt-4 space-y-2">
+      <ol className="space-y-2 p-4">
         {playbook.steps.map((step, index) => {
           const isCurrent = index === safeStep
           const isDone = index < safeStep
@@ -100,25 +115,25 @@ export default function GuidedFixPlaybook({
               key={step}
               data-testid={`playbook-step-${index}`}
               className={[
-                'flex items-start gap-3 rounded-md border p-3 text-sm',
+                'flex items-start gap-3 rounded-lg border px-3 py-2.5 text-[12px] transition-colors',
                 isCurrent
-                  ? 'border-blue-600 bg-blue-50 font-medium'
+                  ? 'border-blue-200 bg-white font-medium text-slate-900 shadow-card'
                   : isDone
-                    ? 'border-transparent text-muted-foreground'
-                    : 'border-transparent text-muted-foreground',
+                    ? 'border-transparent text-slate-400'
+                    : 'border-transparent text-slate-500',
               ].join(' ')}
             >
               <span
                 className={[
-                  'mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                  'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold',
                   isCurrent
                     ? 'bg-blue-600 text-white'
                     : isDone
-                      ? 'bg-green-600 text-white'
-                      : 'bg-muted text-muted-foreground',
+                      ? 'bg-emerald-500 text-white'
+                      : 'border border-slate-200 bg-white text-slate-400',
                 ].join(' ')}
               >
-                {isDone ? '✓' : index + 1}
+                {isDone ? <Check className="h-3 w-3" /> : index + 1}
               </span>
               <span data-testid={`playbook-step-text-${index}`}>{step}</span>
             </li>
@@ -126,26 +141,35 @@ export default function GuidedFixPlaybook({
         })}
       </ol>
 
-      <div className="mt-4 flex gap-2">
-        <Button
-          data-testid="playbook-prev"
-          variant="outline"
-          size="sm"
-          disabled={safeStep === 0}
-          onClick={() => setCurrentStep((step) => Math.max(0, step - 1))}
-        >
-          Back
-        </Button>
-        <Button
-          data-testid="playbook-next"
-          variant={safeStep === total - 1 ? 'default' : 'outline'}
-          size="sm"
-          onClick={() =>
-            setCurrentStep((step) => Math.min(total - 1, step + 1))
-          }
-        >
-          {safeStep === total - 1 ? 'Done' : 'Next'}
-        </Button>
+      <div className="flex items-center justify-between gap-2 border-t border-violet-100 px-4 py-3">
+        <span className="text-[10px] text-slate-400">
+          {safeStep === total - 1
+            ? 'Checklist complete'
+            : `${total - safeStep - 1} step${total - safeStep - 1 === 1 ? '' : 's'} remaining`}
+        </span>
+        <div className="flex gap-2">
+          <Button
+            data-testid="playbook-prev"
+            variant="outline"
+            size="sm"
+            disabled={safeStep === 0}
+            onClick={() => setCurrentStep((step) => Math.max(0, step - 1))}
+          >
+            <ArrowLeft className="h-3 w-3" />
+            Back
+          </Button>
+          <Button
+            data-testid="playbook-next"
+            variant={safeStep === total - 1 ? 'default' : 'outline'}
+            size="sm"
+            onClick={() =>
+              setCurrentStep((step) => Math.min(total - 1, step + 1))
+            }
+          >
+            {safeStep === total - 1 ? 'Done' : 'Next'}
+            {safeStep !== total - 1 && <ArrowRight className="h-3 w-3" />}
+          </Button>
+        </div>
       </div>
     </div>
   )

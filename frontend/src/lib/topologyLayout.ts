@@ -6,6 +6,8 @@ import type { LinkOut } from '@/types/topology'
 export type DeviceNodeData = {
   device: DeviceOut
   status?: DeviceStatus
+  /** The live latency of the latest poll, shown on the node. */
+  latencyMs?: number | null
   /** Set when the device is a single point of failure. */
   blastRadius?: number
   /** Set while a what-if is shown: why this device is predicted to be down. */
@@ -20,27 +22,28 @@ export type DeviceNode = Node<DeviceNodeData, 'device'>
 // Fixed X-column per zone (deterministic manual layout for the seeded topology).
 const ZONE_X: Record<string, number> = {
   edge: 0,
-  'server-tier': 320,
-  'ot-tier': 640,
+  'server-tier': 360,
+  'ot-tier': 720,
 }
 
-const UNKNOWN_ZONE_X = 960
+const UNKNOWN_ZONE_X = 1080
 // Extra links are dashed and blue, so they stand out from the grey tree edges.
 const LINK_COLOR = '#2563eb'
-const ROW_GAP_Y = 110
+const TREE_COLOR = '#cbd5e1'
+const ROW_GAP_Y = 132
 // The size of a device card (DeviceNode). React Flow hides a node until it
 // knows its size, and forgets what it measured whenever the node object is
 // replaced, which every status update does. A status update that arrived
 // together with the first measurement left the whole graph invisible until
 // the page was reloaded. With a size given here, a node is never hidden.
-const NODE_WIDTH = 190
-const NODE_HEIGHT = 65
+const NODE_WIDTH = 224
+const NODE_HEIGHT = 94
 
 const KNOWN_ZONES = Object.keys(ZONE_X)
 
 function zoneColumn(zone: string, extraZones: string[]): number {
   if (zone in ZONE_X) return ZONE_X[zone]
-  return UNKNOWN_ZONE_X + Math.max(0, extraZones.indexOf(zone)) * 320
+  return UNKNOWN_ZONE_X + Math.max(0, extraZones.indexOf(zone)) * 360
 }
 
 /**
@@ -92,6 +95,7 @@ export function computeLayout(
       source: device.parent_id as string,
       target: device.id,
       type: 'smoothstep',
+      style: { stroke: TREE_COLOR, strokeWidth: 1.5 },
     }))
 
   // Like the tree edges, a link is drawn left to right (a node's handles are
@@ -112,7 +116,11 @@ export function computeLayout(
         source: leftToRight ? link.device_a_id : link.device_b_id,
         target: leftToRight ? link.device_b_id : link.device_a_id,
         type: 'smoothstep',
-        style: { strokeDasharray: '6 4', stroke: LINK_COLOR, strokeWidth: 1.5 },
+        style: {
+          strokeDasharray: '6 4',
+          stroke: LINK_COLOR,
+          strokeWidth: 1.6,
+        },
       }
     })
 
